@@ -22,7 +22,7 @@
 
 </div>
 
-<img src="assets/divider.svg" width="100%" alt=""/>
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/divider-dark.svg"><img src="assets/divider.svg" width="100%" alt=""></picture>
 
 <a id="what"></a>
 
@@ -37,7 +37,7 @@
 
 <div align="center"><img src="https://skillicons.dev/icons?i=bash,docker,linux,postgres&theme=dark" height="38" alt="bash · docker · linux · postgres"/></div>
 
-<img src="assets/divider.svg" width="100%" alt=""/>
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/divider-dark.svg"><img src="assets/divider.svg" width="100%" alt=""></picture>
 
 <a id="features"></a>
 
@@ -50,7 +50,7 @@
 - 🛡 страховочный дамп, пауза панели, автооткат при сбое
 - ⬆️ проверка новой версии через GitHub
 
-<img src="assets/divider.svg" width="100%" alt=""/>
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/divider-dark.svg"><img src="assets/divider.svg" width="100%" alt=""></picture>
 
 <a id="install"></a>
 
@@ -73,7 +73,7 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 Отправьте код боту **в личку** — он запишет ваш Telegram ID главным админом.
 Код живёт 30 минут, 10 попыток. Новый: `rw-back admin-code`.
 
-<img src="assets/divider.svg" width="100%" alt=""/>
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/divider-dark.svg"><img src="assets/divider.svg" width="100%" alt=""></picture>
 
 <a id="bot"></a>
 
@@ -89,7 +89,7 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 Админы добавляются по `ID` или `@username`; последнего удалить нельзя.
 Экспорт и импорт доступны только админам, дампы — только в личку.
 
-<img src="assets/divider.svg" width="100%" alt=""/>
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/divider-dark.svg"><img src="assets/divider.svg" width="100%" alt=""></picture>
 
 <a id="import"></a>
 
@@ -103,7 +103,7 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 
 Лимиты Telegram: **20 МБ** на скачивание, **50 МБ** на отправку. Если файл больше — бот пришлёт пошаговую инструкцию (`scp` → `rw-back validate` → `rw-back restore`).
 
-<img src="assets/divider.svg" width="100%" alt=""/>
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/divider-dark.svg"><img src="assets/divider.svg" width="100%" alt=""></picture>
 
 <a id="commands"></a>
 
@@ -120,7 +120,7 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 | `rw-back admin-code` | новый код привязки |
 | `rw-back remove` | удалить |
 
-<img src="assets/divider.svg" width="100%" alt=""/>
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/divider-dark.svg"><img src="assets/divider.svg" width="100%" alt=""></picture>
 
 <a id="security"></a>
 
@@ -132,7 +132,7 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 - параллельные операции блокируются (`flock`)
 - дампы не публикуются в группы
 
-<img src="assets/divider.svg" width="100%" alt=""/>
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/divider-dark.svg"><img src="assets/divider.svg" width="100%" alt=""></picture>
 
 <a id="files"></a>
 
@@ -147,7 +147,7 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 └── logs/
 ```
 
-<img src="assets/divider.svg" width="100%" alt=""/>
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/divider-dark.svg"><img src="assets/divider.svg" width="100%" alt=""></picture>
 
 ## 📄 Лицензия
 
