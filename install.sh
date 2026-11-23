@@ -15,6 +15,17 @@ if [[ -f "$SELF_PATH" ]] && head -c 2 "$SELF_PATH" 2>/dev/null | grep -q '#!' \
     && grep -q 'rw-back' "$SELF_PATH" 2>/dev/null; then
     SELF_IS_SCRIPT=true
 fi
+
+if [[ ! -t 0 && -t 1 && -e /dev/tty && -z "${RW_BACK_EXECED:-}" ]]; then
+    export RW_BACK_EXECED=1
+    if [[ "$SELF_IS_SCRIPT" == true && -r "$SELF_PATH" ]]; then
+        exec bash "$SELF_PATH" "$@" < /dev/tty
+    fi
+    _reexec_tmp="$(mktemp "${TMPDIR:-/tmp}/rw-back-install.XXXXXX")"
+    cat > "$_reexec_tmp"
+    chmod 700 "$_reexec_tmp"
+    exec bash "$_reexec_tmp" "$@" < /dev/tty
+fi
 INSTALL_DIR="/opt/rw-back"
 BOT_SCRIPT="$INSTALL_DIR/rw-back-bot.sh"
 BACKUP_DIR="$INSTALL_DIR/backup"
@@ -47,6 +58,189 @@ print_message() {
 die() {
     print_message "ERROR" "$*"
     exit 1
+}
+
+ui_interactive() {
+    [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" ]]
+}
+
+ui_box() {
+    local title="$1" sub="${2:-}"
+    echo ""
+    echo -e "   ${CYAN}${BOLD}╭──────────────────────────────────────────────╮${RESET}"
+    echo -e "   ${CYAN}${BOLD}│${RESET}  ${MAGENTA}${BOLD}${title}${RESET}  ${GRAY}${sub}${RESET}"
+    echo -e "   ${CYAN}${BOLD}╰──────────────────────────────────────────────╯${RESET}"
+    echo ""
+}
+
+ui_pause() {
+    read -rp "   ${GRAY}Enter — продолжить…${RESET}"
+}
+
+ui_yesno() {
+    local a
+    read -rp "   ${GREEN}[?]${RESET} ${1} (Y/n): " a
+    [[ "${a,,}" != "n" ]]
+}
+
+_UI_M_KEYS=()
+_UI_M_LABELS=()
+_UI_M_STYLES=()
+_UI_M_FOOTER=()
+_UI_M_DRAWN=0
+
+menu_reset() {
+    _UI_M_KEYS=()
+    _UI_M_LABELS=()
+    _UI_M_STYLES=()
+    _UI_M_FOOTER=()
+    _UI_M_DRAWN=0
+}
+
+menu_add() {
+    _UI_M_KEYS+=("$1")
+    _UI_M_LABELS+=("$2")
+    _UI_M_STYLES+=("${3:-}")
+}
+
+menu_gap() {
+    _UI_M_KEYS+=("")
+    _UI_M_LABELS+=("")
+    _UI_M_STYLES+=("gap")
+}
+
+menu_footer() {
+    _UI_M_FOOTER+=("$1")
+}
+
+_ui_m_style() {
+    case "$1" in
+        primary) printf '%s' "${GREEN}${BOLD}" ;;
+        warn) printf '%s' "$YELLOW" ;;
+        danger) printf '%s' "$RED" ;;
+        *) printf '%s' "" ;;
+    esac
+}
+
+_ui_m_index_of() {
+    local i
+    for ((i = 0; i < ${#_UI_M_KEYS[@]}; i++)); do
+        [[ "${_UI_M_STYLES[$i]}" != "gap" && "${_UI_M_KEYS[$i]}" == "$1" ]] && { echo "$i"; return 0; }
+    done
+    return 1
+}
+
+_ui_m_next() {
+    local i="$1" dir="$2" n="${#_UI_M_KEYS[@]}" step
+    for ((step = 0; step < n; step++)); do
+        if (( i < 0 )); then
+            i=0
+        else
+            i=$(( (i + dir + n) % n ))
+        fi
+        [[ "${_UI_M_STYLES[$i]}" != "gap" ]] && { echo "$i"; return 0; }
+    done
+    echo 0
+}
+
+_ui_m_print() {
+    local sel="$1" i st n="${#_UI_M_KEYS[@]}" lines=0 f
+    for ((i = 0; i < n; i++)); do
+        if [[ "${_UI_M_STYLES[$i]}" == "gap" ]]; then
+            printf '\r\e[2K\n'
+            lines=$((lines + 1))
+            continue
+        fi
+        st=$(_ui_m_style "${_UI_M_STYLES[$i]}")
+        if (( i == sel )); then
+            printf '\r\e[2K %s▸%s %s%s. %s %s\n' "${GREEN}${BOLD}" "$RESET" "$BOLD" "${_UI_M_KEYS[$i]}" "${_UI_M_LABELS[$i]}" "$RESET"
+        else
+            printf '\r\e[2K   %s%s. %s%s\n' "$st" "${_UI_M_KEYS[$i]}" "${_UI_M_LABELS[$i]}" "$RESET"
+        fi
+        lines=$((lines + 1))
+    done
+    for f in "${_UI_M_FOOTER[@]}"; do
+        printf '\r\e[2K   %s%s%s\n' "$GRAY" "$f" "$RESET"
+        lines=$((lines + 1))
+    done
+    printf '\r\e[2K   %s↑/↓ — выбор · Enter — открыть · цифра — быстрый выбор%s\n' "$GRAY" "$RESET"
+    lines=$((lines + 1))
+    _UI_M_DRAWN=$lines
+}
+
+_ui_m_done() {
+    printf '\r\e[1A\r\e[2K'
+}
+
+_ui_m_redraw() {
+    if (( _UI_M_DRAWN > 0 )); then
+        printf '\e[%sA' "$_UI_M_DRAWN"
+    fi
+    _ui_m_print "$1"
+}
+
+menu_choose() {
+    local __var="$1" n="${#_UI_M_KEYS[@]}" sel key rest typed="" i
+    if ! ui_interactive; then
+        while true; do
+            echo ""
+            _ui_m_print -1
+            if ! read -rp "   ${GREEN}──>${RESET} Действие: " key; then
+                echo ""
+                exit 1
+            fi
+            if i=$(_ui_m_index_of "$key"); then
+                printf -v "$__var" '%s' "${_UI_M_KEYS[$i]}"
+                return 0
+            fi
+            print_message "ERROR" "Нет такого пункта"
+        done
+    fi
+    sel=$(_ui_m_next -1 1)
+    _ui_m_print "$sel"
+    while true; do
+        IFS= read -rsn1 key
+        case "$key" in
+            $'\x1b')
+                if read -rsn2 -t 0.05 rest; then
+                    case "$rest" in
+                        '[A'|'OA') sel=$(_ui_m_next "$sel" -1); typed="" ;;
+                        '[B'|'OB') sel=$(_ui_m_next "$sel" 1); typed="" ;;
+                    esac
+                fi
+                ;;
+            '')
+                if (( sel >= 0 )); then
+                    printf -v "$__var" '%s' "${_UI_M_KEYS[$sel]}"
+                    _ui_m_done
+                    return 0
+                fi
+                ;;
+            $'\x7f'|$'\b')
+                typed=""
+                ;;
+            *)
+                typed="${typed}${key}"
+                if i=$(_ui_m_index_of "$typed"); then
+                    sel=$i
+                    printf -v "$__var" '%s' "${_UI_M_KEYS[$i]}"
+                    _ui_m_done
+                    return 0
+                fi
+                if ((${#typed} > 1)); then
+                    typed="$key"
+                    if i=$(_ui_m_index_of "$typed"); then
+                        sel=$i
+                        printf -v "$__var" '%s' "${_UI_M_KEYS[$i]}"
+                        _ui_m_done
+                        return 0
+                    fi
+                    typed=""
+                fi
+                ;;
+        esac
+        _ui_m_redraw "$sel"
+    done
 }
 
 require_root() {
@@ -316,15 +510,19 @@ cmd_admin_code() {
 
 wizard() {
     clear 2>/dev/null || true
-    echo -e "   ${MAGENTA}${BOLD}💎 RW-BACK · ПЕРВИЧНАЯ НАСТРОЙКА${RESET}"
-    echo -e "   ${CYAN}──────────────────────────────────────────${RESET}"
-    echo ""
+    ui_box "💎 RW-BACK · ПЕРВИЧНАЯ НАСТРОЙКА"
 
     print_message "ACTION" "1. Telegram"
     echo -e "   Токен бота — у ${CYAN}@BotFather${RESET} (команда /newbot)"
     echo ""
-    read -rp "   ${GREEN}──>${RESET} Токен бота: " BOT_TOKEN
-    [[ -z "$BOT_TOKEN" ]] && die "Без токена бот работать не сможет"
+    local tries=0
+    while true; do
+        read -rp "   ${GREEN}──>${RESET} Токен бота: " BOT_TOKEN
+        [[ -n "$BOT_TOKEN" ]] && break
+        tries=$((tries + 1))
+        (( tries >= 3 )) && die "Токен не введён. Запустите установщик заново: rw-back"
+        print_message "ERROR" "Токен пуст — попробуйте ещё раз"
+    done
     local bot_user
     bot_user="$(bot_username_of)"
     [[ -z "$bot_user" ]] && die "Telegram не принял токен — проверьте его в @BotFather"
@@ -343,28 +541,28 @@ wizard() {
     echo ""
 
     print_message "ACTION" "3. Панель Remnawave"
-    echo "   1. /opt/remnawave"
-    echo "   2. /root/remnawave"
-    echo "   3. /opt/stacks/remnawave"
-    echo "   4. Свой путь"
+    menu_reset
+    menu_add 1 "/opt/remnawave"
+    menu_add 2 "/root/remnawave"
+    menu_add 3 "/opt/stacks/remnawave"
+    menu_add 4 "Свой путь"
     local choice
-    while true; do
-        read -rp "   ${GREEN}──>${RESET} Выберите: " choice
-        case "$choice" in
-            1) PANEL_DIR="/opt/remnawave"; break ;;
-            2) PANEL_DIR="/root/remnawave"; break ;;
-            3) PANEL_DIR="/opt/stacks/remnawave"; break ;;
-            4)
-                read -rp "   Путь: " custom
+    menu_choose choice
+    case "$choice" in
+        1) PANEL_DIR="/opt/remnawave" ;;
+        2) PANEL_DIR="/root/remnawave" ;;
+        3) PANEL_DIR="/opt/stacks/remnawave" ;;
+        4)
+            while true; do
+                read -rp "   ${GREEN}──>${RESET} Путь: " custom
                 if [[ -n "$custom" && "$custom" = /* ]]; then
                     PANEL_DIR="${custom%/}"
                     break
                 fi
                 print_message "ERROR" "Путь должен быть абсолютным"
-                ;;
-            *) print_message "ERROR" "Введите 1–4" ;;
-        esac
-    done
+            done
+            ;;
+    esac
     echo ""
 
     print_message "ACTION" "4. Хранение архивов"
@@ -566,11 +764,7 @@ do_remove() {
     echo "  • команда rw-back"
     echo "  • каталог $INSTALL_DIR (конфиг, состояние, логи)"
     echo ""
-    echo -n "Сохранить архивы бэкапов? (Y/n): "
-    local keep
-    read -r keep
-
-    if [[ "${keep,,}" != "n" ]]; then
+    if ui_yesno "Сохранить архивы бэкапов?"; then
         local stash="/root/rw-back-backups-$(date +%Y%m%d_%H%M%S)"
         if [[ -d "$BACKUP_DIR" ]]; then
             mkdir -p "$stash" && cp -a "$BACKUP_DIR"/. "$stash"/ 2>/dev/null || true
@@ -592,60 +786,65 @@ pick_backup_file() {
 
     if [[ ${#files[@]} -eq 0 ]]; then
         print_message "WARN" "В $BACKUP_DIR нет архивов"
-        read -rp "Путь к файлу дампа: " manual
+        read -rp "   ${GREEN}──>${RESET} Путь к файлу дампа: " manual
         [[ -f "$manual" ]] || { print_message "ERROR" "Файл не найден"; return 1; }
         echo "$manual"
         return 0
     fi
 
-    echo ""
-    echo "  Архивы на сервере:"
+    menu_reset
     local i=1 f
     for f in "${files[@]}"; do
-        printf '   %2d) %-46s %8s\n' "$i" "${f##*/}" "$(du -h "$f" | awk '{print $1}')"
+        menu_add "$i" "${f##*/} ${GRAY}· $(du -h "$f" | awk '{print $1}')${RESET}"
         i=$((i + 1))
     done
-    echo "    0) Указать путь вручную"
-    echo ""
+    menu_gap
+    menu_add 0 "Указать путь вручную"
+    menu_footer "Архивы в ${BACKUP_DIR}"
 
     local choice
-    while true; do
-        read -rp "Выберите номер: " choice
-        [[ "$choice" == "0" ]] && { read -rp "Путь: " manual; [[ -f "$manual" ]] && { echo "$manual"; return 0; }; print_message "ERROR" "Файл не найден"; continue; }
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#files[@]} )); then
-            echo "${files[$((choice - 1))]}"
-            return 0
-        fi
-        print_message "ERROR" "Неверный номер"
-    done
+    menu_choose choice
+    echo ""
+    if [[ "$choice" == "0" ]]; then
+        while true; do
+            read -rp "   ${GREEN}──>${RESET} Путь: " manual
+            [[ -f "$manual" ]] && { echo "$manual"; return 0; }
+            print_message "ERROR" "Файл не найден"
+        done
+    fi
+    echo "${files[$((choice - 1))]}"
+    return 0
 }
 
 menu_backup() {
     load_config
     bash "$BOT_SCRIPT" backup
     echo ""
-    read -rp "Нажмите Enter…"
+    ui_pause
 }
 
 menu_restore() {
     load_config
     local file
-    file="$(pick_backup_file)" || { read -rp "Нажмите Enter…"; return; }
+    file="$(pick_backup_file)" || { ui_pause; return; }
     echo ""
     print_message "WARN" "Текущая база будет перезаписана"
-    read -rp "Продолжить? (Y/N): " answer
-    [[ "${answer,,}" != "y" ]] && { print_message "INFO" "Отменено"; read -rp "Нажмите Enter…"; return; }
+    if ! ui_yesno "Продолжить?"; then
+        print_message "INFO" "Отменено"
+        ui_pause
+        return
+    fi
 
     bash "$BOT_SCRIPT" restore "$file"
     echo ""
-    read -rp "Нажмите Enter…"
+    ui_pause
 }
 
 menu_list() {
     load_config
     bash "$BOT_SCRIPT" list
     echo ""
-    read -rp "Нажмите Enter…"
+    ui_pause
 }
 
 menu_bot() {
@@ -656,22 +855,21 @@ menu_bot() {
             bot_service_active && status="✅ работает" || status="⛔ остановлена"
         fi
 
-        echo -e "   ${MAGENTA}${BOLD}🤖 TELEGRAM-БОТ${RESET}"
-        echo -e "   ${CYAN}──────────────────────────────────────────${RESET}"
+        ui_box "🤖 TELEGRAM-БОТ"
+        echo -e "   ${GRAY}Служба: ${BOLD}${status}${RESET}${GRAY} · бот: ${BOLD}${BOT_TOKEN:0:10}…${RESET}${GRAY} · админы: ${BOLD}${BOT_ADMIN_IDS:-не заданы}${RESET}"
         echo ""
-        echo -e "   Служба: ${BOLD}${status}${RESET}"
-        echo -e "   Бот:     ${BOLD}${BOT_TOKEN:0:10}…${RESET}"
-        echo -e "   Админы:  ${BOLD}${BOT_ADMIN_IDS:-не заданы}${RESET}"
-        echo ""
-        echo -e "   ${BOLD}1.${RESET} ⚙️  Установить / перезапустить службу"
-        echo -e "   ${BOLD}2.${RESET} ⛔ Остановить и удалить службу"
-        echo -e "   ${BOLD}3.${RESET} 📜 Логи"
-        echo -e "   ${BOLD}4.${RESET} ▶️  Запустить в консоли (Ctrl+C — стоп)"
-        echo -e "   ${BOLD}5.${RESET} 📨 Тестовое сообщение"
-        echo ""
-        echo -e "   ${BOLD}0.${RESET} ↩️  Назад"
-        echo ""
-        read -rp "   ${GREEN}──>${RESET} Действие: " choice
+
+        menu_reset
+        menu_add 1 "⚙️  Установить / перезапустить службу"
+        menu_add 2 "⛔ Остановить и удалить службу"
+        menu_add 3 "📜 Логи"
+        menu_add 4 "▶️  Запустить в консоли (Ctrl+C — стоп)"
+        menu_add 5 "📨 Тестовое сообщение"
+        menu_gap
+        menu_add 0 "↩️  Назад"
+
+        local choice
+        menu_choose choice
         echo ""
 
         case "$choice" in
@@ -697,29 +895,29 @@ menu_bot() {
                 fi
                 ;;
             0) return ;;
-            *) print_message "ERROR" "Неверный ввод" ;;
         esac
         echo ""
-        read -rp "Нажмите Enter…"
+        ui_pause
     done
 }
 
 menu_settings() {
     while true; do
         clear 2>/dev/null || true
-        echo -e "   ${MAGENTA}${BOLD}⚙️  ПАРАМЕТРЫ${RESET}"
-        echo -e "   ${CYAN}──────────────────────────────────────────${RESET}"
-        echo ""
-        echo -e "   ${BOLD}1.${RESET} 📱 Telegram: токен и чат уведомлений"
-        echo -e "   ${BOLD}2.${RESET} 🗄  Контейнер и имя базы"
-        echo -e "   ${BOLD}3.${RESET} 📂 Каталог панели"
-        echo -e "   ${BOLD}4.${RESET} 👥 Админы бота (обычно через бота)"
-        echo -e "   ${BOLD}5.${RESET} 📦 Хранить файлов"
-        echo -e "   ${BOLD}6.${RESET} 🔑 Код привязки главного админа"
-        echo ""
-        echo -e "   ${BOLD}0.${RESET} ↩️  Назад"
-        echo ""
-        read -rp "   ${GREEN}──>${RESET} Действие: " choice
+        ui_box "⚙️  ПАРАМЕТРЫ"
+
+        menu_reset
+        menu_add 1 "📱 Telegram: токен и чат уведомлений"
+        menu_add 2 "🗄  Контейнер и имя базы"
+        menu_add 3 "📂 Каталог панели"
+        menu_add 4 "👥 Админы бота (обычно через бота)"
+        menu_add 5 "📦 Хранить файлов"
+        menu_add 6 "🔑 Код привязки главного админа"
+        menu_gap
+        menu_add 0 "↩️  Назад"
+
+        local choice input
+        menu_choose choice
         echo ""
 
         case "$choice" in
@@ -769,12 +967,11 @@ menu_settings() {
                     print_message "ERROR" "Число от 1 до 200"
                 fi
                 ;;
-            6) cmd_admin_code && read -rp "Нажмите Enter…" ;;
+            6) cmd_admin_code && ui_pause ;;
             0) return ;;
-            *) print_message "ERROR" "Неверный ввод" ;;
         esac
         echo ""
-        read -rp "Нажмите Enter…"
+        ui_pause
     done
 }
 
@@ -783,32 +980,30 @@ main_menu() {
         clear 2>/dev/null || true
         local version
         version="$(local_version)"
+        ui_box "💎 RW-BACK" "v${version} · by CyberERROR"
 
-        echo -e "   ${MAGENTA}${BOLD}💎 RW-BACK${RESET}  ${BOLD}${GRAY}v${version}${RESET}  ${GRAY}(by CyberERROR)${RESET}"
-        echo -e "   ${CYAN}──────────────────────────────────────────${RESET}"
-        echo ""
         local cron_txt="выключен"
         (( CRON_HOURS > 0 )) && cron_txt="каждые ${CRON_HOURS} ч (в боте)"
-        echo -e "   🗄 БД: ${BOLD}${DB_CONTAINER}${RESET} · архивов: ${BOLD}$(find "$BACKUP_DIR" -maxdepth 1 -name 'rw_db_backup_*.sql.gz' 2>/dev/null | wc -l)${RESET}"
-        echo -e "   🕒 Автобэкап: ${BOLD}${cron_txt}${RESET}"
+        echo -e "   ${GRAY}🗄 БД: ${BOLD}${DB_CONTAINER}${RESET}${GRAY} · архивов: ${BOLD}$(find "$BACKUP_DIR" -maxdepth 1 -name 'rw_db_backup_*.sql.gz' 2>/dev/null | wc -l)${RESET}${GRAY} · автобэкап: ${BOLD}${cron_txt}${RESET}"
         update_hint
         echo ""
-        echo -e "   ${BOLD}1.${RESET} 💾 Создать бэкап"
-        echo -e "   ${BOLD}2.${RESET} 📥 Восстановить из архива"
-        echo -e "   ${BOLD}3.${RESET} 📦 Список архивов"
-        echo ""
-        echo -e "   ${BOLD}4.${RESET} 🤖 Telegram-бот"
-        echo -e "   ${BOLD}5.${RESET} 🛠  Параметры"
-        echo -e "   ${BOLD}6.${RESET} 🔄 Проверить обновление"
-        echo ""
-        echo -e "   ${BOLD}7.${RESET} 🗑  Удалить rw-back"
-        echo -e "   ${BOLD}0.${RESET} ❌ Выход"
-        echo ""
-        echo -e "   ${CYAN}──────────────────────────────────────────${RESET}"
-        echo -e "    Команда: ${BOLD}${GREEN}rw-back${RESET}"
-        echo ""
 
-        read -rp "   ${GREEN}──>${RESET} Действие: " choice
+        menu_reset
+        menu_add 1 "💾 Создать бэкап"
+        menu_add 2 "📥 Восстановить из архива"
+        menu_add 3 "📦 Список архивов"
+        menu_gap
+        menu_add 4 "🤖 Telegram-бот"
+        menu_add 5 "🛠  Параметры"
+        menu_add 6 "🔄 Проверить обновление"
+        menu_gap
+        menu_add 7 "🗑  Удалить rw-back" danger
+        menu_gap
+        menu_add 0 "❌ Выход"
+        menu_footer "Команда: rw-back"
+
+        local choice
+        menu_choose choice
         echo ""
 
         case "$choice" in
@@ -820,7 +1015,6 @@ main_menu() {
             6) do_update ;;
             7) do_remove ;;
             0) echo "   👋 До встречи!"; exit 0 ;;
-            *) print_message "ERROR" "Неверный ввод"; sleep 1 ;;
         esac
     done
 }
@@ -851,9 +1045,7 @@ main() {
             require_root
             if [[ ! -x "$BOT_SCRIPT" ]]; then
                 clear 2>/dev/null || true
-                echo -e "   ${MAGENTA}${BOLD}💎 УСТАНОВКА RW-BACK${RESET}"
-                echo -e "   ${CYAN}──────────────────────────────────────────${RESET}"
-                echo ""
+                ui_box "💎 УСТАНОВКА RW-BACK"
                 install_deps
                 install_self
                 wizard
