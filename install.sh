@@ -26,6 +26,13 @@ fi
 # ── Пути ────────────────────────────────────────────────────────────────────
 SELF_PATH="$(realpath "$0" 2>/dev/null || echo "$0")"
 SELF_DIR="$(dirname "$SELF_PATH")"
+# При запуске через `curl | bash` в $0 оказывается интерпретатор (например /usr/bin/bash),
+# поэтому «мы — файл скрипта» проверяем по содержимому, а не только по пути.
+SELF_IS_SCRIPT=false
+if [[ -f "$SELF_PATH" ]] && head -c 2 "$SELF_PATH" 2>/dev/null | grep -q '#!' \
+    && grep -q 'rw-back' "$SELF_PATH" 2>/dev/null; then
+    SELF_IS_SCRIPT=true
+fi
 INSTALL_DIR="/opt/rw-back"
 BOT_SCRIPT="$INSTALL_DIR/rw-back-bot.sh"
 BACKUP_DIR="$INSTALL_DIR/backup"
@@ -173,21 +180,19 @@ install_self() {
     print_message "INFO" "Раскладываю файлы в ${BOLD}${INSTALL_DIR}${RESET}…"
     mkdir -p "$INSTALL_DIR" "$BACKUP_DIR" "$STATE_DIR" "$LOG_DIR" "$INSTALL_DIR/scripts"
 
-    # install.sh: при запуске через curl | bash исходника на диске нет
-    if [[ "$SELF_PATH" != "$INSTALL_DIR/install.sh" ]]; then
-        if [[ -f "$SELF_PATH" && -s "$SELF_PATH" ]]; then
-            cp -f "$SELF_PATH" "$INSTALL_DIR/install.sh" || die "Не удалось скопировать установщик"
-        elif [[ ! -s "$INSTALL_DIR/install.sh" ]]; then
-            print_message "INFO" "Скачиваю install.sh из GitHub…"
-            fetch_file "$RAW_MAIN/install.sh" "$INSTALL_DIR/install.sh" "rw-back" ||
-                die "Не удалось скачать install.sh"
-        fi
+    # install.sh: если запущены из файла — копируем, иначе (curl | bash) скачиваем
+    if [[ "$SELF_IS_SCRIPT" == true && "$SELF_PATH" != "$INSTALL_DIR/install.sh" ]]; then
+        cp -f "$SELF_PATH" "$INSTALL_DIR/install.sh" || die "Не удалось скопировать установщик"
+    elif [[ ! -s "$INSTALL_DIR/install.sh" ]]; then
+        print_message "INFO" "Скачиваю install.sh из GitHub…"
+        fetch_file "$RAW_MAIN/install.sh" "$INSTALL_DIR/install.sh" "rw-back" ||
+            die "Не удалось скачать install.sh"
     fi
     chmod 755 "$INSTALL_DIR/install.sh"
 
     # rw-back-bot.sh: сначала локальный, затем из репозитория
     local bot_src=""
-    if [[ -f "$SELF_DIR/rw-back-bot.sh" ]]; then
+    if [[ "$SELF_IS_SCRIPT" == true && -f "$SELF_DIR/rw-back-bot.sh" ]]; then
         bot_src="$SELF_DIR/rw-back-bot.sh"
     elif [[ -f "$BOT_SCRIPT" ]]; then
         bot_src="$BOT_SCRIPT"
@@ -207,9 +212,9 @@ install_self() {
     chmod 750 "$BOT_SCRIPT"
 
     # VERSION
-    if [[ -f "$SELF_DIR/VERSION" ]]; then
+    if [[ "$SELF_IS_SCRIPT" == true && -f "$SELF_DIR/VERSION" ]]; then
         cp -f "$SELF_DIR/VERSION" "$VERSION_FILE"
-    elif [[ ! -f "$VERSION_FILE" ]]; then
+    elif [[ ! -s "$VERSION_FILE" ]]; then
         fetch_file "$RAW_MAIN/VERSION" "$VERSION_FILE" "" || echo "dev" > "$VERSION_FILE"
     fi
 
