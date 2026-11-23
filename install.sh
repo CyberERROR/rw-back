@@ -398,16 +398,18 @@ install_self() {
 
 setup_symlink() {
     if [[ -d "$(dirname "$SYMLINK_PATH")" ]]; then
-        ln -sfn "$INSTALL_DIR/install.sh" "$SYMLINK_PATH" 2>/dev/null &&
-            print_message "SUCCESS" "Команда ${BOLD}rw-back${RESET} доступна" ||
+        if ln -sfn "$INSTALL_DIR/install.sh" "$SYMLINK_PATH" 2>/dev/null; then
+            print_message "SUCCESS" "Команда ${BOLD}rw-back${RESET} доступна"
+        else
             print_message "WARN" "Не удалось создать ссылку $SYMLINK_PATH"
+        fi
     fi
 }
 
 generate_setup_code() {
     local raw
     raw=$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' \n')
-    [[ "$raw" =~ ^[0-9]+$ ]] || raw=$(( (RANDOM * 32768 + RANDOM) ))
+    [[ "$raw" =~ ^[0-9]+$ ]] || raw=$((RANDOM * 32768 + RANDOM))
     printf '%06d' "$((raw % 1000000))"
 }
 
@@ -520,7 +522,7 @@ wizard() {
         read -rp "   ${GREEN}──>${RESET} Токен бота: " BOT_TOKEN
         [[ -n "$BOT_TOKEN" ]] && break
         tries=$((tries + 1))
-        (( tries >= 3 )) && die "Токен не введён. Запустите установщик заново: rw-back"
+        (( tries >= 3 )) && die "Токен не введён — установка прервана"
         print_message "ERROR" "Токен пуст — попробуйте ещё раз"
     done
     local bot_user
@@ -765,9 +767,11 @@ do_remove() {
     echo "  • каталог $INSTALL_DIR (конфиг, состояние, логи)"
     echo ""
     if ui_yesno "Сохранить архивы бэкапов?"; then
-        local stash="/root/rw-back-backups-$(date +%Y%m%d_%H%M%S)"
+        local stash
+        stash="/root/rw-back-backups-$(date +%Y%m%d_%H%M%S)"
         if [[ -d "$BACKUP_DIR" ]]; then
-            mkdir -p "$stash" && cp -a "$BACKUP_DIR"/. "$stash"/ 2>/dev/null || true
+            mkdir -p "$stash" 2>/dev/null || true
+            cp -a "$BACKUP_DIR"/. "$stash"/ 2>/dev/null || true
             print_message "SUCCESS" "Архивы сохранены: $stash"
         fi
     fi
@@ -849,6 +853,7 @@ menu_list() {
 
 menu_bot() {
     while true; do
+        load_config
         clear 2>/dev/null || true
         local status="➖ не установлена"
         if bot_service_installed; then
@@ -942,7 +947,11 @@ menu_settings() {
             3)
                 read -rp "   Каталог панели (${PANEL_DIR}): " input
                 if [[ -n "$input" ]]; then
-                    [[ "$input" = /* ]] && PANEL_DIR="${input%/}" || print_message "ERROR" "Нужен абсолютный путь"
+                    if [[ "$input" = /* ]]; then
+                        PANEL_DIR="${input%/}"
+                    else
+                        print_message "ERROR" "Нужен абсолютный путь"
+                    fi
                 fi
                 save_config
                 print_message "SUCCESS" "Сохранено"
@@ -1078,11 +1087,14 @@ main() {
             print_message "SUCCESS" "Готово. Запустите: rw-back"
             ;;
         admin-code) cmd_admin_code ;;
-        update) do_update ;;
+        update)
+            shift
+            do_update "$@"
+            ;;
         bot-install) install_bot_service ;;
         bot-remove) remove_bot_service ;;
         remove|uninstall) do_remove ;;
-        version|--version|-v) echo "$(local_version)" ;;
+        version|--version|-v) local_version ;;
         -h|--help|help) usage ;;
         *) usage; exit 1 ;;
     esac

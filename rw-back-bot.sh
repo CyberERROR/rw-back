@@ -3,9 +3,9 @@ set -o pipefail
 
 if [[ -t 1 ]]; then
     RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; CYAN=$'\e[36m'
-    GRAY=$'\e[90m'; BOLD=$'\e[1m'; RESET=$'\e[0m'
+    GRAY=$'\e[90m'; RESET=$'\e[0m'
 else
-    RED=""; GREEN=""; YELLOW=""; CYAN=""; GRAY=""; BOLD=""; RESET=""
+    RED=""; GREEN=""; YELLOW=""; CYAN=""; GRAY=""; RESET=""
 fi
 
 SELF_PATH="$(realpath "$0" 2>/dev/null || echo "$0")"
@@ -17,8 +17,6 @@ IMPORT_DIR="$STATE_DIR/import_inbox"
 SAFETY_DIR="$BACKUP_DIR/pre_restore"
 CONFIG_FILE="$INSTALL_DIR/config.env"
 VERSION_FILE="$INSTALL_DIR/VERSION"
-SERVICE_NAME="rw-back-bot"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 REPO="CyberERROR/rw-back"
 REPO_API="https://api.github.com/repos/$REPO"
 RAW_MAIN="https://raw.githubusercontent.com/$REPO/main"
@@ -26,7 +24,6 @@ RAW_MAIN="https://raw.githubusercontent.com/$REPO/main"
 TG_MAX_DOWNLOAD_MB=20
 TG_MAX_UPLOAD_MB=50
 DUMP_MAX_UNPACK_MB=600
-DUMP_MAX_RATIO=60
 DUMP_MAX_SQL_BYTES=$((DUMP_MAX_UNPACK_MB * 1024 * 1024))
 UPDATE_CACHE_TTL=21600
 LOCAL_VERSION="dev"
@@ -51,8 +48,6 @@ die() {
     print_message "ERROR" "$*"
     exit 1
 }
-
-CONFIG_KEYS="BOT_TOKEN CHAT_ID BOT_ADMIN_IDS DB_USER DB_NAME DB_CONTAINER PANEL_CONTAINER CACHE_CONTAINER CRON_HOURS KEEP_FILES PANEL_DIR"
 
 load_config() {
     BOT_TOKEN=""; CHAT_ID=""; BOT_ADMIN_IDS=""
@@ -728,8 +723,8 @@ cleanup_vd() {
 }
 
 restore_sql_file() {
-    local sql="$1" target_db="${2:-}" safety="${3:-}"
-    local log_file="$STATE_DIR/restore_$(date +%s).log"
+    local sql="$1" target_db="${2:-}" safety="${3:-}" log_file
+    log_file="$STATE_DIR/restore_$(date +%s).log"
 
     [[ -n "$target_db" ]] || target_db="$DB_NAME"
     if head -n 400 "$sql" 2>/dev/null | grep -q -i "CREATE DATABASE"; then
@@ -791,7 +786,9 @@ apply_retention() {
     i=0
     for f in "${safes[@]}"; do
         i=$((i + 1))
-        (( i > 3 )) && rm -f "$f" 2>/dev/null || true
+        if (( i > 3 )); then
+            rm -f "$f" 2>/dev/null || true
+        fi
     done
 
     find "$IMPORT_DIR" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
@@ -992,7 +989,7 @@ $(escape_html "$reason")" "$(kb_remna)"
 
     apply_retention "$KEEP_FILES"
 
-    local size_bytes size_h size_text upd caption
+    local size_bytes size_h upd caption
     size_bytes=$(bytes_of "$file")
     size_h=$(human_size "$file")
     upd="$(update_line)"
@@ -1147,7 +1144,8 @@ $(escape_html "$reason")" "$(kb_remna)"
 
     printf '%s\n' "$local_file" > "$STATE_DIR/pending_import"
 
-    local summary="✅ <b>Файл проверен</b>
+    local summary
+    summary="✅ <b>Файл проверен</b>
 ➖➖➖➖➖
 📂 <code>$(escape_html "$doc_name")</code>
 📏 $(human_size "$local_file")
@@ -1432,9 +1430,8 @@ handle_update() {
         local awaiting
         awaiting="$(await_get "$uid")"
         if [[ -n "$awaiting" ]]; then
-            local act param
+            local act
             act="${awaiting%%|*}"
-            param="${awaiting#*|}"
             case "$act" in
                 add_admin)
                     local clean
@@ -1785,7 +1782,8 @@ cmd_cron() {
 
     local size
     size=$(human_size "$file")
-    local caption="🕒 <b>Автобэкап Remnawave</b>
+    local caption
+    caption="🕒 <b>Автобэкап Remnawave</b>
 ➖➖➖➖➖
 🗄 БД: <code>$(escape_html "$DB_NAME")</code>
 📏 Размер: <b>${size}</b>

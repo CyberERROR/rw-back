@@ -10,7 +10,7 @@
   <img src="https://skillicons.dev/icons?i=bash,docker,linux,ubuntu,postgres&theme=dark" alt="Bash · Docker · Linux · Ubuntu · PostgreSQL"/>
 </p>
 
-[![Version](https://img.shields.io/badge/version-2.1.3-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](VERSION)
+[![Version](https://img.shields.io/badge/version-2.1.4-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](VERSION)
 [![Remnawave](https://img.shields.io/badge/Remnawave-3.4.11-2563eb?style=for-the-badge&labelColor=0d1117)](https://github.com/remnawave/backend)
 [![Stars](https://img.shields.io/github/stars/CyberERROR/rw-back?style=for-the-badge&labelColor=0d1117&logo=github&label=stars&color=7c3aed)](https://github.com/CyberERROR/rw-back/stargazers)
 [![Telegram](https://img.shields.io/badge/Telegram-%D1%87%D0%B0%D1%82-9333ea?style=for-the-badge&labelColor=0d1117&logo=telegram&logoColor=white)](https://t.me/+YV_BO1cmGWw5OTdi)
