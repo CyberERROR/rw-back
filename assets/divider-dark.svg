@@ -2,16 +2,16 @@
   <defs>
     <linearGradient id="l" x1="0" y1="0" x2="592" y2="0" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#06b6d4" stop-opacity="0"/>
-      <stop offset="0.5" stop-color="#22d3ee" stop-opacity="0.6"/>
+      <stop offset="0.25" stop-color="#22d3ee" stop-opacity="0.55"/>
       <stop offset="1" stop-color="#22d3ee" stop-opacity="1"/>
     </linearGradient>
     <linearGradient id="r" x1="608" y1="0" x2="1200" y2="0" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#a78bfa" stop-opacity="1"/>
-      <stop offset="0.5" stop-color="#c026d3" stop-opacity="0.6"/>
+      <stop offset="0.75" stop-color="#c026d3" stop-opacity="0.55"/>
       <stop offset="1" stop-color="#c026d3" stop-opacity="0"/>
     </linearGradient>
   </defs>
-  <path d="M0 12H592" stroke="url(#l)" stroke-width="2" stroke-linecap="round"/>
-  <path d="M608 12H1200" stroke="url(#r)" stroke-width="2" stroke-linecap="round"/>
-  <path d="M600 5.5 606.5 12 600 18.5 593.5 12Z" fill="#22d3ee"/>
+  <path d="M0 12H590" stroke="url(#l)" stroke-width="3" stroke-linecap="round"/>
+  <path d="M610 12H1200" stroke="url(#r)" stroke-width="3" stroke-linecap="round"/>
+  <path d="M600 4.5 607.5 12 600 19.5 592.5 12Z" fill="#22d3ee"/>
 </svg>
