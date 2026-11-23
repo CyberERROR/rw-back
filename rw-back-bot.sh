@@ -277,6 +277,106 @@ admin_list_text() {
     printf '%s' "$out"
 }
 
+# ── Первичная привязка главного админа ─────────────────────────────────────
+# Установщик генерирует 6-значный код и кладёт его в state/setup_code.
+# Пока админов нет, бот принимает только этот код — и только в личке.
+SETUP_CODE_TTL=3600     # час на привязку
+SETUP_MAX_ATTEMPTS=10   # защита от подбора
+
+setup_code_current() {
+    local file="$STATE_DIR/setup_code" code ts now
+    [[ -f "$file" ]] || return 0
+    IFS='|' read -r code ts < "$file" 2>/dev/null || return 0
+    [[ "$code" =~ ^[0-9]{6}$ ]] || return 0
+    [[ "$ts" =~ ^[0-9]+$ ]] || return 0
+    now=$(date +%s)
+    (( now - ts > SETUP_CODE_TTL )) && return 0
+    printf '%s' "$code"
+}
+
+setup_code_clear() {
+    rm -f "$STATE_DIR/setup_code" "$STATE_DIR/setup_attempts" 2>/dev/null
+    return 0
+}
+
+setup_attempts_add() {
+    local file="$STATE_DIR/setup_attempts" n=0
+    [[ -f "$file" ]] && n=$(head -n 1 "$file" 2>/dev/null)
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    n=$((n + 1))
+    mkdir -p "$STATE_DIR" 2>/dev/null
+    echo "$n" > "$file" 2>/dev/null
+    printf '%s' "$n"
+}
+
+bind_main_admin() { # uid
+    local uid="$1"
+    BOT_ADMIN_IDS="$uid"
+    # уведомления — в личку главному админу
+    if [[ -z "$CHAT_ID" || ! "$CHAT_ID" =~ ^[0-9]+$ ]]; then
+        CHAT_ID="$uid"
+    fi
+    save_config
+    setup_code_clear
+}
+
+handle_binding() { # kind chat_id thread uid text cb_id
+    local kind="$1" chat_id="$2" thread="$3" uid="$4" text="$5" cb_id="$6"
+
+    [[ "$kind" == "callback" ]] && tg_answer "$cb_id" "введите код из установщика"
+
+    # код принимаем только в личке: в группе его увидели бы все
+    if [[ "$chat_id" != "$uid" ]]; then
+        tg_send "$uid" "🔒 <b>Привязка админа</b>
+➖➖➖➖➖
+Только в личке с ботом. Отправьте /start." "" > /dev/null 2>&1 || true
+        return 0
+    fi
+
+    local code
+    code="$(setup_code_current)"
+    if [[ -z "$code" ]]; then
+        tg_send "$chat_id" "🔒 <b>Бот ещё не настроен</b>
+➖➖➖➖➖
+Запустите на сервере <code>rw-back</code>
+и отправьте код, который он покажет." "" "$thread" > /dev/null
+        return 0
+    fi
+
+    local input
+    input="$(printf '%s' "$text" | tr -dc '0-9')"
+
+    if [[ -n "$input" && "$input" == "$code" ]]; then
+        bind_main_admin "$uid"
+        tg_send "$chat_id" "✅ <b>Вы главный админ</b>
+➖➖➖➖➖
+ID: <code>${uid}</code>
+Добавить других: ⚙️ Настройки → 👥 Админы
+
+$(start_text)" "$KB_MAIN" "$thread" > /dev/null
+        notify_chat_text "✅ <b>rw-back</b>: главный админ привязан (<code>${uid}</code>)"
+        log "привязан главный админ: $uid"
+        return 0
+    fi
+
+    local attempts left
+    attempts="$(setup_attempts_add)"
+    left=$((SETUP_MAX_ATTEMPTS - attempts))
+    if (( left <= 0 )); then
+        setup_code_clear
+        tg_send "$chat_id" "⛔ <b>Слишком много попыток</b>
+➖➖➖➖➖
+Код сброшен. Новый: <code>rw-back admin-code</code> на сервере." "" "$thread" > /dev/null
+        log "привязка: превышено число попыток (uid=$uid)"
+        return 0
+    fi
+
+    tg_send "$chat_id" "🔑 <b>Введите код из установщика</b>
+➖➖➖➖➖
+6 цифр · осталось попыток: <b>${left}</b>" "" "$thread" > /dev/null
+    return 0
+}
+
 # ── Проверка обновлений ─────────────────────────────────────────────────────
 version_compare() { # 0 если $1 < $2
     local a="${1#v}" b="${2#v}"
@@ -1392,9 +1492,13 @@ handle_update() {
 
     [[ -z "$kind" || -z "$chat_id" || -z "$uid" ]] && return 0
 
-    # доступ только админам
+    # доступ только админам; пока админов нет — режим привязки по коду
     if ! is_admin "$uid"; then
-        log "отказ: user_id=$uid chat_id=$chat_id"
+        if [[ "$(admin_count)" -eq 0 ]]; then
+            handle_binding "$kind" "$chat_id" "$thread" "$uid" "$text" "$cb_id"
+        else
+            log "отказ: user_id=$uid chat_id=$chat_id"
+        fi
         return 0
     fi
 
@@ -1697,14 +1801,12 @@ serve() {
     local username
     username=$(printf '%s' "$me" | jq -r '.result.username // "bot"' 2>/dev/null)
 
-    # админы обязательны: без них бот бесполезен и небезопасен
+    # админы задаются привязкой по коду из установщика (см. handle_binding)
     if [[ "$(admin_count)" -eq 0 ]]; then
-        if [[ "$CHAT_ID" =~ ^[0-9]+$ ]]; then
-            BOT_ADMIN_IDS="$CHAT_ID"
-            save_config
-            log "админ не задан — подставил CHAT_ID=$CHAT_ID"
+        if [[ -n "$(setup_code_current)" ]]; then
+            print_message "INFO" "Режим привязки: жду код из установщика"
         else
-            die "Не заданы админы: добавьте BOT_ADMIN_IDS в $CONFIG_FILE"
+            print_message "WARN" "Админы не заданы. Код привязки: rw-back admin-code"
         fi
     fi
 

@@ -11,7 +11,7 @@
   <img src="https://skillicons.dev/icons?i=bash,docker,linux,ubuntu,postgres&theme=dark" alt="Bash · Docker · Linux · Ubuntu · PostgreSQL"/>
 </p>
 
-[![Version](https://img.shields.io/badge/version-2.0.0-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](VERSION)
+[![Version](https://img.shields.io/badge/version-2.1.0-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](VERSION)
 [![Remnawave](https://img.shields.io/badge/Remnawave-3.4.11-2563eb?style=for-the-badge&labelColor=0d1117&logo=cloudflare&logoColor=white)](https://github.com/remnawave/backend)
 [![Last Commit](https://img.shields.io/github/last-commit/CyberERROR/rw-back?style=for-the-badge&labelColor=0d1117&label=last%20commit&color=7c3aed)](https://github.com/CyberERROR/rw-back/commits)
 
@@ -238,12 +238,30 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 | Вопрос | Пример | 💡 |
 |:--|:--|:--|
 | 🤖 Токен бота | `1234567:AA…` | [@BotFather](https://t.me/botfather) → `/newbot` |
-| 👤 Ваш Telegram ID | `123456789` | [@userinfobot](https://t.me/userinfobot) — это же и первый админ |
 | 🗄 Контейнер БД | `remnawave-db` | по умолчанию, менять не нужно |
 | 📂 Каталог панели | `/opt/remnawave` | где лежит `docker-compose.yml` панели |
 | 📦 Хранить файлов | `5` | ротация архивов |
 
-<img src="https://img.shields.io/badge/%D0%A8%D0%90%D0%93_4-%D0%93%D0%BE%D1%82%D0%BE%D0%B2%D0%BE-c026d3?style=for-the-badge&labelColor=0d1117" alt="Шаг 4"/>
+<img src="https://img.shields.io/badge/%D0%A8%D0%90%D0%93_4-%D0%9F%D1%80%D0%B8%D0%B2%D1%8F%D0%B6%D0%B8%D1%82%D0%B5_%D0%B0%D0%B4%D0%BC%D0%B8%D0%BD%D0%B0-4f46e5?style=for-the-badge&labelColor=0d1117" alt="Шаг 4"/>
+
+Установщик покажет **одноразовый 6-значный код**:
+
+```text
+══════════════════════════════════════════
+🔑 КОД ПРИВЯЗКИ АДМИНА:  847213
+══════════════════════════════════════════
+
+1. Откройте бота:  https://t.me/your_bot
+2. Напишите:       /start
+3. Отправьте код:  847213
+```
+
+Откройте бота, отправьте `/start` и этот код в **личку**. Бот возьмёт ваш Telegram ID и запишет главным админом — дальше он слушает только вас, пока вы в **⚙️ Настройки → 👥 Админы** не добавите остальных.
+
+> [!NOTE]
+> Код живёт 1 час и сгорает после 10 неверных попыток. Новый: `rw-back admin-code`.
+
+<img src="https://img.shields.io/badge/%D0%A8%D0%90%D0%93_5-%D0%93%D0%BE%D1%82%D0%BE%D0%B2%D0%BE-c026d3?style=for-the-badge&labelColor=0d1117" alt="Шаг 5"/>
 
 ```text
 🎉 Установка завершена
@@ -261,6 +279,23 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 <img src="https://capsule-render.vercel.app/api?type=soft&height=60&color=0:000000,55:030b1f,100:2563eb&text=TELEGRAM-%D0%91%D0%9E%D0%A2&fontSize=24&fontColor=60A5FA&fontAlignY=55&animation=fadeIn" width="100%" alt="TELEGRAM-БОТ"/>
 
 Бот открывается командой **`/start`** и работает только для админов из списка.
+
+<details>
+<summary><b>🔑 Привязка главного админа</b> — одноразовый код при установке</summary>
+<br>
+
+1. Установщик генерирует **6-значный код** и показывает его в консоли
+2. Вы открываете бота, отправляете `/start` и код **в личку**
+3. Бот берёт ваш Telegram ID и записывает главным админом
+4. Дальше он отвечает только вам, пока вы не добавите других в настройках
+
+Защита:
+
+- код живёт **1 час**, хранится в `state/setup_code` с правами `600`
+- только **личка** — в группе код не принимается
+- **10 попыток**, затем код сгорает
+- новый код: `rw-back admin-code`
+</details>
 
 | Раздел | Что внутри |
 |---|---|
@@ -365,6 +400,7 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 | `rw-back validate ФАЙЛ` | проверить дамп, ничего не меняя |
 | `rw-back list` | список архивов |
 | `rw-back update` | обновить до последней версии |
+| `rw-back admin-code` | новый код привязки главного админа |
 | `rw-back bot-install` | поставить/перезапустить службу бота |
 | `rw-back version` | текущая версия |
 | `rw-back remove` | полностью удалить (архивы можно сохранить) |
@@ -466,11 +502,23 @@ docker ps | grep remnawave-db
 
 </details>
 
+<a id="tests"></a>
+
+## 🧪 Тесты
+
+```bash
+bash tests/test_validate.sh   # 13 кейсов валидатора дампов
+bash tests/test_bot.sh        # 35 кейсов логики бота
+```
+
+Нужны только `bash` и `jq` — Docker, сеть и Telegram не требуются. Подробности в [tests/README.md](tests/README.md).
+
 <!-- ═══════════════════════════  SECURITY  ═══════════════════════════ -->
 ## 🛡 Безопасность
 
 - 🔑 `config.env` — `chmod 600`, каталоги — `700`
 - 👥 операции только для админов, чужие сообщения игнорируются
+- 🎟 первый админ привязывается одноразовым кодом: 6 цифр, 1 час, 10 попыток, только в личке
 - 🔒 одновременные операции блокируются (`flock`)
 - 📥 входящие файлы проверяются до восстановления, `../` и абсолютные пути в zip отсекаются
 - 🧯 перед импортом — страховочный дамп; при сбое панель откатывается

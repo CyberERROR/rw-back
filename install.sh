@@ -235,6 +235,113 @@ setup_symlink() {
     fi
 }
 
+# ── Первичная привязка главного админа ──────────────────────────────────────
+# Установщик показывает 6-значный код, бот принимает его только в личке
+# и записывает Telegram ID как главного админа.
+generate_setup_code() {
+    local raw
+    raw=$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' \n')
+    [[ "$raw" =~ ^[0-9]+$ ]] || raw=$(( (RANDOM * 32768 + RANDOM) ))
+    printf '%06d' "$((raw % 1000000))"
+}
+
+write_setup_code() {
+    local code="$1"
+    mkdir -p "$STATE_DIR" || return 1
+    umask 077
+    printf '%s|%s\n' "$code" "$(date +%s)" > "$STATE_DIR/setup_code" || return 1
+    chmod 600 "$STATE_DIR/setup_code" 2>/dev/null
+    rm -f "$STATE_DIR/setup_attempts" 2>/dev/null
+    return 0
+}
+
+bot_username_of() {
+    local resp
+    [[ -n "$BOT_TOKEN" ]] || return 0
+    resp=$(curl -s --max-time 15 "https://api.telegram.org/bot${BOT_TOKEN}/getMe" 2>/dev/null)
+    printf '%s' "$resp" | jq -r '.result.username // empty' 2>/dev/null
+}
+
+main_admin_id() {
+    grep -m1 '^BOT_ADMIN_IDS=' "$CONFIG_FILE" 2>/dev/null |
+        cut -d= -f2- | tr -d '"' | cut -d, -f1 | tr -d '[:space:]'
+}
+
+wait_admin_binding() { # таймаут в секундах
+    local timeout="${1:-900}" waited=0 id
+    while (( waited < timeout )); do
+        id="$(main_admin_id)"
+        [[ "$id" =~ ^[0-9]+$ ]] && return 0
+        sleep 3
+        waited=$((waited + 3))
+    done
+    return 1
+}
+
+setup_admin_flow() {
+    local existing username code id
+    existing="$(main_admin_id)"
+    if [[ "$existing" =~ ^[0-9]+$ ]]; then
+        print_message "SUCCESS" "Главный админ уже привязан: ${BOLD}${existing}${RESET}"
+        return 0
+    fi
+
+    username="$(bot_username_of)"
+    if [[ -z "$username" ]]; then
+        print_message "ERROR" "Telegram не принял токен — привязка невозможна"
+        return 1
+    fi
+
+    code="$(generate_setup_code)"
+    write_setup_code "$code" || { print_message "ERROR" "Не удалось сохранить код"; return 1; }
+
+    echo ""
+    echo -e "   ${CYAN}══════════════════════════════════════════${RESET}"
+    echo -e "   ${BOLD}🔑 КОД ПРИВЯЗКИ АДМИНА:${RESET}  ${BOLD}${GREEN}${code}${RESET}"
+    echo -e "   ${CYAN}══════════════════════════════════════════${RESET}"
+    echo ""
+    echo -e "   1. Откройте бота:  ${BOLD}https://t.me/${username}${RESET}"
+    echo -e "   2. Напишите:       ${BOLD}/start${RESET}"
+    echo -e "   3. Отправьте код:  ${BOLD}${GREEN}${code}${RESET}"
+    echo ""
+    print_message "INFO" "Код действует 1 час. Жду привязку…"
+
+    if wait_admin_binding 900; then
+        id="$(main_admin_id)"
+        print_message "SUCCESS" "Главный админ привязан: ${BOLD}${id}${RESET}"
+        return 0
+    fi
+
+    print_message "WARN" "Привязка не произошла. Код остаётся действителен 1 час."
+    print_message "INFO" "Новый код в любой момент: ${BOLD}rw-back admin-code${RESET}"
+    return 1
+}
+
+cmd_admin_code() {
+    load_config
+    mkdir -p "$STATE_DIR"
+    local existing username code
+    existing="$(main_admin_id)"
+    if [[ "$existing" =~ ^[0-9]+$ ]]; then
+        print_message "INFO" "Главный админ уже привязан: ${existing}"
+        print_message "INFO" "Добавить других: бот → ⚙️ Настройки → 👥 Админы"
+        return 0
+    fi
+    [[ -n "$BOT_TOKEN" ]] || die "Сначала задайте токен бота: rw-back"
+    username="$(bot_username_of)"
+    [[ -n "$username" ]] || die "Telegram не принял токен"
+    code="$(generate_setup_code)"
+    write_setup_code "$code" || die "Не удалось сохранить код"
+
+    echo ""
+    print_message "ACTION" "Код привязки: ${BOLD}${GREEN}${code}${RESET} (1 час)"
+    echo "  1. Откройте https://t.me/${username}"
+    echo "  2. Отправьте /start"
+    echo "  3. Отправьте код: ${code}"
+    echo ""
+    return 0
+}
+
 # ── Первичная настройка ─────────────────────────────────────────────────────
 wizard() {
     clear 2>/dev/null || true
@@ -243,13 +350,17 @@ wizard() {
     echo ""
 
     print_message "ACTION" "1. Telegram"
-    echo -e "   Токен бота — у ${CYAN}@BotFather${RESET}, ID — у ${CYAN}@userinfobot${RESET}"
+    echo -e "   Токен бота — у ${CYAN}@BotFather${RESET} (команда /newbot)"
     echo ""
     read -rp "   ${GREEN}──>${RESET} Токен бота: " BOT_TOKEN
     [[ -z "$BOT_TOKEN" ]] && die "Без токена бот работать не сможет"
-    read -rp "   ${GREEN}──>${RESET} Ваш Telegram ID (админ): " CHAT_ID
-    [[ ! "$CHAT_ID" =~ ^[0-9]+$ ]] && die "ID должен быть числом"
-    BOT_ADMIN_IDS="$CHAT_ID"
+    local bot_user
+    bot_user="$(bot_username_of)"
+    [[ -z "$bot_user" ]] && die "Telegram не принял токен — проверьте его в @BotFather"
+    print_message "SUCCESS" "Бот: @${bot_user}"
+    # главный админ привяжется одноразовым кодом после запуска службы
+    BOT_ADMIN_IDS=""
+    CHAT_ID=""
     echo ""
 
     print_message "ACTION" "2. База данных"
@@ -642,6 +753,7 @@ menu_settings() {
         echo -e "   ${BOLD}3.${RESET} 📂 Каталог панели"
         echo -e "   ${BOLD}4.${RESET} 👥 Админы бота (обычно через бота)"
         echo -e "   ${BOLD}5.${RESET} 📦 Хранить файлов"
+        echo -e "   ${BOLD}6.${RESET} 🔑 Код привязки главного админа"
         echo ""
         echo -e "   ${BOLD}0.${RESET} ↩️  Назад"
         echo ""
@@ -695,6 +807,7 @@ menu_settings() {
                     print_message "ERROR" "Число от 1 до 200"
                 fi
                 ;;
+            6) cmd_admin_code && read -rp "Нажмите Enter…" ;;
             0) return ;;
             *) print_message "ERROR" "Неверный ввод" ;;
         esac
@@ -761,6 +874,7 @@ rw-back — бэкап базы Remnawave + Telegram-бот
   rw-back list           список архивов
   rw-back validate FILE  проверить дамп
   rw-back update         обновить до последней версии
+  rw-back admin-code     новый код привязки главного админа
   rw-back bot-install    установить службу бота
   rw-back remove         удалить rw-back
   rw-back version        версия
@@ -783,10 +897,11 @@ main() {
                 install_self
                 wizard
                 echo ""
+                install_bot_service
+                setup_admin_flow
+                echo ""
                 print_message "SUCCESS" "Установка завершена. Открываю меню…"
                 sleep 1
-                install_bot_service
-                echo ""
             fi
             main_menu
             ;;
@@ -806,8 +921,10 @@ main() {
             install_self
             wizard
             install_bot_service
+            setup_admin_flow
             print_message "SUCCESS" "Готово. Запустите: rw-back"
             ;;
+        admin-code) cmd_admin_code ;;
         update) do_update ;;
         bot-install) install_bot_service ;;
         bot-remove) remove_bot_service ;;
