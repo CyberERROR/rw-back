@@ -156,7 +156,12 @@ tg_send() {
     local args=(--data-urlencode "chat_id=$chat_id" --data-urlencode "text=$text" -d "parse_mode=HTML" -d "disable_web_page_preview=true")
     [[ -n "$thread" ]] && args+=(--data-urlencode "message_thread_id=$thread")
     [[ -n "$markup" ]] && args+=(--data-urlencode "reply_markup=$markup")
-    tg_call sendMessage "${args[@]}"
+    local response
+    response=$(tg_call sendMessage "${args[@]}")
+    if ! tg_ok "$response"; then
+        log "sendMessage ${chat_id}: $(tg_error_of "$response")"
+    fi
+    printf '%s' "$response"
 }
 
 tg_edit() {
@@ -1708,6 +1713,14 @@ serve() {
     local username
     username=$(printf '%s' "$me" | jq -r '.result.username // "bot"' 2>/dev/null)
 
+    local hook hook_url
+    hook=$(tg_call getWebhookInfo)
+    hook_url=$(printf '%s' "$hook" | jq -r '.result.url // empty' 2>/dev/null)
+    if [[ -n "$hook_url" ]]; then
+        log "найден webhook ${hook_url} — сбрасываю для long polling"
+        tg_call deleteWebhook > /dev/null 2>&1 || log "не удалось сбросить webhook"
+    fi
+
     if [[ "$(admin_count)" -eq 0 ]]; then
         if [[ -n "$(setup_code_current)" ]]; then
             print_message "INFO" "Режим привязки: жду код из установщика"
@@ -1744,16 +1757,21 @@ serve() {
         [[ "$count" =~ ^[0-9]+$ ]] || count=0
 
         if (( count > 0 )); then
-            local last
+            local last failed=0
             last=$(printf '%s' "$response" | jq -r '.result[-1].update_id' 2>/dev/null)
             while IFS= read -r upd; do
                 (
-                    exec 9> "$STATE_DIR/ops.lock"
-                    flock -w 30 9 || exit 0
+                    exec 9> "$STATE_DIR/ops.lock" 2>/dev/null || exit 1
+                    if command -v flock > /dev/null 2>&1; then
+                        flock -w 30 9 || { log "не дождался ops.lock — апдейт вернётся в очередь"; exit 1; }
+                    fi
                     handle_update "$upd"
-                )
+                ) || {
+                    failed=1
+                    log "апдейт не обработан — оставляю в очереди"
+                }
             done < <(printf '%s' "$response" | jq -c '.result[]' 2>/dev/null)
-            if [[ "$last" =~ ^[0-9]+$ ]]; then
+            if (( failed == 0 )) && [[ "$last" =~ ^[0-9]+$ ]]; then
                 offset=$((last + 1))
                 echo "$offset" > "$STATE_DIR/offset"
             fi
