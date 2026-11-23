@@ -47,6 +47,9 @@ REPO="CyberERROR/rw-back"
 REPO_API="https://api.github.com/repos/$REPO"
 RAW_MAIN="https://raw.githubusercontent.com/$REPO/main"
 UPDATE_CACHE_TTL=21600
+# срок жизни кода привязки главного админа
+SETUP_CODE_MINUTES=30
+SETUP_CODE_TTL=$((SETUP_CODE_MINUTES * 60))
 
 # ── Печать ──────────────────────────────────────────────────────────────────
 print_message() {
@@ -267,8 +270,8 @@ main_admin_id() {
         cut -d= -f2- | tr -d '"' | cut -d, -f1 | tr -d '[:space:]'
 }
 
-wait_admin_binding() { # таймаут в секундах
-    local timeout="${1:-900}" waited=0 id
+wait_admin_binding() { # таймаут в секундах (по умолчанию — срок жизни кода)
+    local timeout="${1:-1800}" waited=0 id
     while (( waited < timeout )); do
         id="$(main_admin_id)"
         [[ "$id" =~ ^[0-9]+$ ]] && return 0
@@ -304,15 +307,15 @@ setup_admin_flow() {
     echo -e "   2. Напишите:       ${BOLD}/start${RESET}"
     echo -e "   3. Отправьте код:  ${BOLD}${GREEN}${code}${RESET}"
     echo ""
-    print_message "INFO" "Код действует 1 час. Жду привязку…"
+    print_message "INFO" "Код действует ${SETUP_CODE_MINUTES} минут. Жду привязку…"
 
-    if wait_admin_binding 900; then
+    if wait_admin_binding "$SETUP_CODE_TTL"; then
         id="$(main_admin_id)"
         print_message "SUCCESS" "Главный админ привязан: ${BOLD}${id}${RESET}"
         return 0
     fi
 
-    print_message "WARN" "Привязка не произошла. Код остаётся действителен 1 час."
+    print_message "WARN" "Привязка не произошла. Код остаётся действителен ещё ${SETUP_CODE_MINUTES} минут."
     print_message "INFO" "Новый код в любой момент: ${BOLD}rw-back admin-code${RESET}"
     return 1
 }
@@ -334,7 +337,7 @@ cmd_admin_code() {
     write_setup_code "$code" || die "Не удалось сохранить код"
 
     echo ""
-    print_message "ACTION" "Код привязки: ${BOLD}${GREEN}${code}${RESET} (1 час)"
+    print_message "ACTION" "Код привязки: ${BOLD}${GREEN}${code}${RESET} (действует ${SETUP_CODE_MINUTES} минут)"
     echo "  1. Откройте https://t.me/${username}"
     echo "  2. Отправьте /start"
     echo "  3. Отправьте код: ${code}"

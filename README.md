@@ -11,7 +11,7 @@
   <img src="https://skillicons.dev/icons?i=bash,docker,linux,ubuntu,postgres&theme=dark" alt="Bash · Docker · Linux · Ubuntu · PostgreSQL"/>
 </p>
 
-[![Version](https://img.shields.io/badge/version-2.1.0-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](VERSION)
+[![Version](https://img.shields.io/badge/version-2.1.1-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](VERSION)
 [![Remnawave](https://img.shields.io/badge/Remnawave-3.4.11-2563eb?style=for-the-badge&labelColor=0d1117&logo=cloudflare&logoColor=white)](https://github.com/remnawave/backend)
 [![Last Commit](https://img.shields.io/github/last-commit/CyberERROR/rw-back?style=for-the-badge&labelColor=0d1117&label=last%20commit&color=7c3aed)](https://github.com/CyberERROR/rw-back/commits)
 
@@ -259,7 +259,7 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 Откройте бота, отправьте `/start` и этот код в **личку**. Бот возьмёт ваш Telegram ID и запишет главным админом — дальше он слушает только вас, пока вы в **⚙️ Настройки → 👥 Админы** не добавите остальных.
 
 > [!NOTE]
-> Код живёт 1 час и сгорает после 10 неверных попыток. Новый: `rw-back admin-code`.
+> Код живёт **30 минут** и сгорает после 10 неверных попыток. Новый: `rw-back admin-code`.
 
 <img src="https://img.shields.io/badge/%D0%A8%D0%90%D0%93_5-%D0%93%D0%BE%D1%82%D0%BE%D0%B2%D0%BE-c026d3?style=for-the-badge&labelColor=0d1117" alt="Шаг 5"/>
 
@@ -291,7 +291,7 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 
 Защита:
 
-- код живёт **1 час**, хранится в `state/setup_code` с правами `600`
+- код живёт **30 минут**, хранится в `state/setup_code` с правами `600`
 - только **личка** — в группе код не принимается
 - **10 попыток**, затем код сгорает
 - новый код: `rw-back admin-code`
@@ -518,7 +518,7 @@ bash tests/test_bot.sh        # 35 кейсов логики бота
 
 - 🔑 `config.env` — `chmod 600`, каталоги — `700`
 - 👥 операции только для админов, чужие сообщения игнорируются
-- 🎟 первый админ привязывается одноразовым кодом: 6 цифр, 1 час, 10 попыток, только в личке
+- 🎟 первый админ привязывается одноразовым кодом: 6 цифр, 30 минут, 10 попыток, только в личке
 - 🔒 одновременные операции блокируются (`flock`)
 - 📥 входящие файлы проверяются до восстановления, `../` и абсолютные пути в zip отсекаются
 - 🧯 перед импортом — страховочный дамп; при сбое панель откатывается
