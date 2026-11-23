@@ -1,0 +1,15 @@
+# локальные артефакты
+.tmp/
+*.bak
+*.tmp
+*.log
+
+# рабочие данные (на сервере они лежат в /opt/rw-back)
+state/
+backup/
+logs/
+config.env
+
+# служебное
+.DS_Store
+Thumbs.db
