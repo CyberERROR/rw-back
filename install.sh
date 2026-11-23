@@ -1,21 +1,6 @@
 #!/usr/bin/env bash
-# ═══════════════════════════════════════════════════════════════════════════
-#  install.sh — установка и управление rw-back
-#  Бэкап базы Remnawave + Telegram-бот (импорт/экспорт)
-#  Репозиторий: https://github.com/CyberERROR/rw-back
-# ───────────────────────────────────────────────────────────────────────────
-#  Быстрый старт:
-#    curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh | bash
-#  После установки:
-#    rw-back              — меню
-#    rw-back backup       — бэкап без меню
-#    rw-back restore ФАЙЛ — восстановление
-#    rw-back update       — обновление
-#    rw-back remove       — удаление
-# ═══════════════════════════════════════════════════════════════════════════
 set -o pipefail
 
-# ── Цвета ───────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
     RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; CYAN=$'\e[36m'
     MAGENTA=$'\e[35m'; GRAY=$'\e[90m'; BOLD=$'\e[1m'; RESET=$'\e[0m'
@@ -23,11 +8,8 @@ else
     RED=""; GREEN=""; YELLOW=""; CYAN=""; MAGENTA=""; GRAY=""; BOLD=""; RESET=""
 fi
 
-# ── Пути ────────────────────────────────────────────────────────────────────
 SELF_PATH="$(realpath "$0" 2>/dev/null || echo "$0")"
 SELF_DIR="$(dirname "$SELF_PATH")"
-# При запуске через `curl | bash` в $0 оказывается интерпретатор (например /usr/bin/bash),
-# поэтому «мы — файл скрипта» проверяем по содержимому, а не только по пути.
 SELF_IS_SCRIPT=false
 if [[ -f "$SELF_PATH" ]] && head -c 2 "$SELF_PATH" 2>/dev/null | grep -q '#!' \
     && grep -q 'rw-back' "$SELF_PATH" 2>/dev/null; then
@@ -47,11 +29,9 @@ REPO="CyberERROR/rw-back"
 REPO_API="https://api.github.com/repos/$REPO"
 RAW_MAIN="https://raw.githubusercontent.com/$REPO/main"
 UPDATE_CACHE_TTL=21600
-# срок жизни кода привязки главного админа
 SETUP_CODE_MINUTES=30
 SETUP_CODE_TTL=$((SETUP_CODE_MINUTES * 60))
 
-# ── Печать ──────────────────────────────────────────────────────────────────
 print_message() {
     local type="$1" message="$2" color="$RESET"
     case "$type" in
@@ -75,7 +55,6 @@ require_root() {
     fi
 }
 
-# ── Конфиг (общий с ботом) ──────────────────────────────────────────────────
 load_config() {
     BOT_TOKEN=""; CHAT_ID=""; BOT_ADMIN_IDS=""
     DB_USER="postgres"; DB_NAME="postgres"; DB_CONTAINER="remnawave-db"
@@ -83,7 +62,6 @@ load_config() {
     CRON_HOURS="0"; KEEP_FILES="5"; PANEL_DIR="/opt/remnawave"
 
     if [[ -f "$CONFIG_FILE" ]]; then
-        # shellcheck disable=SC1090
         source "$CONFIG_FILE"
     fi
 
@@ -129,14 +107,12 @@ local_version() {
     fi
 }
 
-# ── Зависимости ─────────────────────────────────────────────────────────────
 install_deps() {
     local need=(curl jq gzip cron)
     local missing=() p
     for p in "${need[@]}"; do
         command -v "$p" > /dev/null 2>&1 || missing+=("$p")
     done
-    # cron на Debian/Ubuntu живёт как cron/cronie
     if ! command -v crontab > /dev/null 2>&1; then
         missing+=("cron")
     fi
@@ -158,8 +134,7 @@ install_deps() {
     done
 }
 
-# ── Скачивание файлов проекта ───────────────────────────────────────────────
-fetch_file() { # url dest [marker]
+fetch_file() {
     local url="$1" dest="$2" marker="${3:-}"
     local tmp="$dest.tmp.$$"
 
@@ -183,7 +158,6 @@ install_self() {
     print_message "INFO" "Раскладываю файлы в ${BOLD}${INSTALL_DIR}${RESET}…"
     mkdir -p "$INSTALL_DIR" "$BACKUP_DIR" "$STATE_DIR" "$LOG_DIR" "$INSTALL_DIR/scripts"
 
-    # install.sh: если запущены из файла — копируем, иначе (curl | bash) скачиваем
     if [[ "$SELF_IS_SCRIPT" == true && "$SELF_PATH" != "$INSTALL_DIR/install.sh" ]]; then
         cp -f "$SELF_PATH" "$INSTALL_DIR/install.sh" || die "Не удалось скопировать установщик"
     elif [[ ! -s "$INSTALL_DIR/install.sh" ]]; then
@@ -193,7 +167,6 @@ install_self() {
     fi
     chmod 755 "$INSTALL_DIR/install.sh"
 
-    # rw-back-bot.sh: сначала локальный, затем из репозитория
     local bot_src=""
     if [[ "$SELF_IS_SCRIPT" == true && -f "$SELF_DIR/rw-back-bot.sh" ]]; then
         bot_src="$SELF_DIR/rw-back-bot.sh"
@@ -214,7 +187,6 @@ install_self() {
     fi
     chmod 750 "$BOT_SCRIPT"
 
-    # VERSION
     if [[ "$SELF_IS_SCRIPT" == true && -f "$SELF_DIR/VERSION" ]]; then
         cp -f "$SELF_DIR/VERSION" "$VERSION_FILE"
     elif [[ ! -s "$VERSION_FILE" ]]; then
@@ -238,9 +210,6 @@ setup_symlink() {
     fi
 }
 
-# ── Первичная привязка главного админа ──────────────────────────────────────
-# Установщик показывает 6-значный код, бот принимает его только в личке
-# и записывает Telegram ID как главного админа.
 generate_setup_code() {
     local raw
     raw=$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' \n')
@@ -270,7 +239,7 @@ main_admin_id() {
         cut -d= -f2- | tr -d '"' | cut -d, -f1 | tr -d '[:space:]'
 }
 
-wait_admin_binding() { # таймаут в секундах (по умолчанию — срок жизни кода)
+wait_admin_binding() {
     local timeout="${1:-1800}" waited=0 id
     while (( waited < timeout )); do
         id="$(main_admin_id)"
@@ -345,7 +314,6 @@ cmd_admin_code() {
     return 0
 }
 
-# ── Первичная настройка ─────────────────────────────────────────────────────
 wizard() {
     clear 2>/dev/null || true
     echo -e "   ${MAGENTA}${BOLD}💎 RW-BACK · ПЕРВИЧНАЯ НАСТРОЙКА${RESET}"
@@ -361,7 +329,6 @@ wizard() {
     bot_user="$(bot_username_of)"
     [[ -z "$bot_user" ]] && die "Telegram не принял токен — проверьте его в @BotFather"
     print_message "SUCCESS" "Бот: @${bot_user}"
-    # главный админ привяжется одноразовым кодом после запуска службы
     BOT_ADMIN_IDS=""
     CHAT_ID=""
     echo ""
@@ -409,8 +376,7 @@ wizard() {
     print_message "SUCCESS" "Настройки сохранены"
 }
 
-# ── Проверка обновлений ─────────────────────────────────────────────────────
-version_compare() { # 0 если $1 < $2
+version_compare() {
     local a="${1#v}" b="${2#v}"
     [[ "$a" == "$b" ]] && return 1
     local first
@@ -452,7 +418,6 @@ update_hint() {
     fi
 }
 
-# ── Служба бота ─────────────────────────────────────────────────────────────
 bot_service_active() {
     systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null
 }
@@ -519,8 +484,7 @@ cron_remove() {
     (crontab -l 2>/dev/null | grep -v 'rw-back-bot.sh cron') | crontab - 2>/dev/null || true
 }
 
-# ── Обновление ──────────────────────────────────────────────────────────────
-do_update() { # [--auto]
+do_update() {
     local auto="${1:-}"
     require_root
     load_config
@@ -557,7 +521,6 @@ do_update() { # [--auto]
     fi
     curl -fsSL --max-time 60 -H "User-Agent: rw-back" -o "$work/VERSION" "$RAW_MAIN/VERSION" 2>/dev/null || true
 
-    # проверка целостности до замены файлов
     if ! bash -n "$work/rw-back-bot.sh" 2>/dev/null; then
         rm -rf "$work"; die "Новый rw-back-bot.sh не прошёл проверку синтаксиса — обновление отменено"
     fi
@@ -566,7 +529,6 @@ do_update() { # [--auto]
     fi
     grep -q 'rw-back-bot' "$work/rw-back-bot.sh" || { rm -rf "$work"; die "Файл бота повреждён"; }
 
-    # резервная копия текущих файлов
     local stamp
     stamp="$(date +%Y%m%d_%H%M%S)"
     cp -f "$BOT_SCRIPT" "$INSTALL_DIR/scripts/rw-back-bot.sh.${stamp}.bak" 2>/dev/null || true
@@ -596,7 +558,6 @@ do_update() { # [--auto]
     return 0
 }
 
-# ── Деинсталляция ───────────────────────────────────────────────────────────
 do_remove() {
     require_root
     echo ""
@@ -625,7 +586,6 @@ do_remove() {
     exit 0
 }
 
-# ── Выбор файла для восстановления ──────────────────────────────────────────
 pick_backup_file() {
     local files=()
     mapfile -t files < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'rw_db_backup_*.sql.gz' -printf '%T@ %p\n' 2>/dev/null | sort -nr | cut -d' ' -f2-)
@@ -660,7 +620,6 @@ pick_backup_file() {
     done
 }
 
-# ── Меню ────────────────────────────────────────────────────────────────────
 menu_backup() {
     load_config
     bash "$BOT_SCRIPT" backup
@@ -866,7 +825,6 @@ main_menu() {
     done
 }
 
-# ── Точка входа ─────────────────────────────────────────────────────────────
 usage() {
     cat <<'TXT'
 rw-back — бэкап базы Remnawave + Telegram-бот

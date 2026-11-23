@@ -1,21 +1,6 @@
 #!/usr/bin/env bash
-# ═══════════════════════════════════════════════════════════════════════════
-#  rw-back-bot.sh — Telegram-бот резервного копирования БД Remnawave
-#  Часть проекта rw-back:  install.sh (установка/меню) + rw-back-bot.sh (бот)
-#  Репозиторий: https://github.com/CyberERROR/rw-back
-# ───────────────────────────────────────────────────────────────────────────
-#  Режимы:
-#    rw-back-bot.sh                — слушать Telegram (служба)
-#    rw-back-bot.sh cron           — один автоматический бэкап + рассылка
-#    rw-back-bot.sh backup         — ручной бэкап с отправкой в Telegram
-#    rw-back-bot.sh list           — список архивов на сервере
-#    rw-back-bot.sh validate FILE  — проверить файл дампа (без восстановления)
-#    rw-back-bot.sh restore FILE   — восстановить БД из файла
-#    rw-back-bot.sh version        — версия
-# ═══════════════════════════════════════════════════════════════════════════
 set -o pipefail
 
-# ── Цвета (только для консоли) ──────────────────────────────────────────────
 if [[ -t 1 ]]; then
     RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; CYAN=$'\e[36m'
     GRAY=$'\e[90m'; BOLD=$'\e[1m'; RESET=$'\e[0m'
@@ -23,7 +8,6 @@ else
     RED=""; GREEN=""; YELLOW=""; CYAN=""; GRAY=""; BOLD=""; RESET=""
 fi
 
-# ── Пути и константы ────────────────────────────────────────────────────────
 SELF_PATH="$(realpath "$0" 2>/dev/null || echo "$0")"
 SELF_DIR="$(dirname "$SELF_PATH")"
 INSTALL_DIR="${RW_BACK_DIR:-/opt/rw-back}"
@@ -39,18 +23,14 @@ REPO="CyberERROR/rw-back"
 REPO_API="https://api.github.com/repos/$REPO"
 RAW_MAIN="https://raw.githubusercontent.com/$REPO/main"
 
-# Лимиты Telegram Bot API (обычный, не локальный сервер):
-#   бот скачивает файлы до 20 МБ, отправляет документы до 50 МБ
 TG_MAX_DOWNLOAD_MB=20
 TG_MAX_UPLOAD_MB=50
-# Ограничения защиты от вредоносных/«бомбовых» архивов
 DUMP_MAX_UNPACK_MB=600
 DUMP_MAX_RATIO=60
 DUMP_MAX_SQL_BYTES=$((DUMP_MAX_UNPACK_MB * 1024 * 1024))
-UPDATE_CACHE_TTL=21600   # 6 часов
+UPDATE_CACHE_TTL=21600
 LOCAL_VERSION="dev"
 
-# ── Служебное ───────────────────────────────────────────────────────────────
 log() {
     printf '[%s] %s\n' "$(date +'%Y-%m-%d %H:%M:%S')" "$*" >&2
 }
@@ -72,7 +52,6 @@ die() {
     exit 1
 }
 
-# ── Конфигурация ────────────────────────────────────────────────────────────
 CONFIG_KEYS="BOT_TOKEN CHAT_ID BOT_ADMIN_IDS DB_USER DB_NAME DB_CONTAINER PANEL_CONTAINER CACHE_CONTAINER CRON_HOURS KEEP_FILES PANEL_DIR"
 
 load_config() {
@@ -82,7 +61,6 @@ load_config() {
     CRON_HOURS="0"; KEEP_FILES="5"; PANEL_DIR="/opt/remnawave"
 
     if [[ -f "$CONFIG_FILE" ]]; then
-        # shellcheck disable=SC1090
         source "$CONFIG_FILE"
     fi
 
@@ -136,7 +114,6 @@ bind_version() {
     [[ -z "$LOCAL_VERSION" ]] && LOCAL_VERSION="dev"
 }
 
-# ── Проверка зависимостей ───────────────────────────────────────────────────
 require_deps() {
     local need=(curl jq gzip)
     local missing=() p
@@ -161,12 +138,10 @@ have_unzip() {
     command -v unzip > /dev/null 2>&1
 }
 
-# ── HTML-экранирование (sed: & в ${var//} это найденный текст в bash 5.2+) ──
 escape_html() {
     printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
-# ── Telegram API ────────────────────────────────────────────────────────────
 tg_call() {
     local method="$1"
     shift
@@ -181,7 +156,7 @@ tg_error_of() {
     printf '%s' "$1" | jq -r '.description // "нет ответа от Telegram"' 2>/dev/null
 }
 
-tg_send() { # chat_id text [markup] [thread]
+tg_send() {
     local chat_id="$1" text="$2" markup="${3:-}" thread="${4:-}"
     local args=(--data-urlencode "chat_id=$chat_id" --data-urlencode "text=$text" -d "parse_mode=HTML" -d "disable_web_page_preview=true")
     [[ -n "$thread" ]] && args+=(--data-urlencode "message_thread_id=$thread")
@@ -189,21 +164,21 @@ tg_send() { # chat_id text [markup] [thread]
     tg_call sendMessage "${args[@]}"
 }
 
-tg_edit() { # chat_id message_id text [markup]
+tg_edit() {
     local chat_id="$1" message_id="$2" text="$3" markup="${4:-}"
     local args=(--data-urlencode "chat_id=$chat_id" --data-urlencode "message_id=$message_id" --data-urlencode "text=$text" -d "parse_mode=HTML")
     [[ -n "$markup" ]] && args+=(--data-urlencode "reply_markup=$markup")
     tg_call editMessageText "${args[@]}" > /dev/null 2>&1
 }
 
-tg_answer() { # callback_id [text]
+tg_answer() {
     local callback_id="$1" text="${2:-}"
     local args=(--data-urlencode "callback_query_id=$callback_id")
     [[ -n "$text" ]] && args+=(--data-urlencode "text=$text")
     tg_call answerCallbackQuery "${args[@]}" > /dev/null 2>&1
 }
 
-tg_doc() { # chat_id file caption [thread]
+tg_doc() {
     local chat_id="$1" file="$2" caption="${3:-}" thread="${4:-}"
     local args=(-F "chat_id=$chat_id" -F "document=@$file" -F "parse_mode=HTML")
     [[ -n "$caption" ]] && args+=(-F "caption=$caption")
@@ -219,7 +194,6 @@ msg_id_of() {
     printf '%s' "$1" | jq -r '.result.message_id // empty' 2>/dev/null
 }
 
-# ── Клавиатуры ──────────────────────────────────────────────────────────────
 KB_MAIN='{"inline_keyboard":[[{"text":"💎 Remnawave","callback_data":"m:remna"},{"text":"⚙️ Настройки","callback_data":"m:settings"}]]}'
 
 kb_remna() {
@@ -238,7 +212,6 @@ kb_import_confirm() {
     printf '%s' '{"inline_keyboard":[[{"text":"✅ Восстановить","callback_data":"i:yes"},{"text":"❌ Отмена","callback_data":"i:no"}]]}'
 }
 
-# ── Кто админ ───────────────────────────────────────────────────────────────
 normalize_ids() {
     printf '%s' "$1" | tr -d ' ' | sed -e 's/,,\+/,/g' -e 's/^,//' -e 's/,$//'
 }
@@ -277,11 +250,8 @@ admin_list_text() {
     printf '%s' "$out"
 }
 
-# ── Первичная привязка главного админа ─────────────────────────────────────
-# Установщик генерирует 6-значный код и кладёт его в state/setup_code.
-# Пока админов нет, бот принимает только этот код — и только в личке.
-SETUP_CODE_TTL=1800     # 30 минут на привязку
-SETUP_MAX_ATTEMPTS=10   # защита от подбора
+SETUP_CODE_TTL=1800
+SETUP_MAX_ATTEMPTS=10
 
 setup_code_current() {
     local file="$STATE_DIR/setup_code" code ts now
@@ -309,10 +279,9 @@ setup_attempts_add() {
     printf '%s' "$n"
 }
 
-bind_main_admin() { # uid
+bind_main_admin() {
     local uid="$1"
     BOT_ADMIN_IDS="$uid"
-    # уведомления — в личку главному админу
     if [[ -z "$CHAT_ID" || ! "$CHAT_ID" =~ ^[0-9]+$ ]]; then
         CHAT_ID="$uid"
     fi
@@ -320,12 +289,11 @@ bind_main_admin() { # uid
     setup_code_clear
 }
 
-handle_binding() { # kind chat_id thread uid text cb_id
+handle_binding() {
     local kind="$1" chat_id="$2" thread="$3" uid="$4" text="$5" cb_id="$6"
 
     [[ "$kind" == "callback" ]] && tg_answer "$cb_id" "введите код из установщика"
 
-    # код принимаем только в личке: в группе его увидели бы все
     if [[ "$chat_id" != "$uid" ]]; then
         tg_send "$uid" "🔒 <b>Привязка админа</b>
 ➖➖➖➖➖
@@ -377,8 +345,7 @@ $(start_text)" "$KB_MAIN" "$thread" > /dev/null
     return 0
 }
 
-# ── Проверка обновлений ─────────────────────────────────────────────────────
-version_compare() { # 0 если $1 < $2
+version_compare() {
     local a="${1#v}" b="${2#v}"
     [[ "$a" == "$b" ]] && return 1
     local first
@@ -386,7 +353,7 @@ version_compare() { # 0 если $1 < $2
     [[ "$first" == "$a" ]]
 }
 
-update_check() { # печатает удалённую версию или пусто; кэш 6 часов
+update_check() {
     local cache="$STATE_DIR/update_cache"
     mkdir -p "$STATE_DIR" 2>/dev/null
     if [[ -f "$cache" ]]; then
@@ -413,11 +380,11 @@ update_check() { # печатает удалённую версию или пу�
     printf '%s' "$remote"
 }
 
-tg_ok_like() { # проверка JSON от GitHub (поле tag_name) без Telegram-специфики
+tg_ok_like() {
     printf '%s' "$1" | jq -e '.tag_name != null' > /dev/null 2>&1
 }
 
-update_line() { # строка для сообщений, пусто если всё актуально
+update_line() {
     local remote
     remote="$(update_check)"
     [[ -z "$remote" ]] && return 0
@@ -426,7 +393,6 @@ update_line() { # строка для сообщений, пусто если в
     fi
 }
 
-# ── Docker: БД и панель ─────────────────────────────────────────────────────
 db_running() {
     docker container inspect -f '{{.State.Running}}' "$DB_CONTAINER" 2>/dev/null | grep -q true
 }
@@ -468,8 +434,7 @@ db_size_text() {
     echo "${size:-—}"
 }
 
-# Ждём, пока панель станет healthy (в compose 3.4.11 у неё есть healthcheck)
-wait_panel_healthy() { # timeout_sec
+wait_panel_healthy() {
     local timeout="${1:-180}" waited=0 status
     panel_exists || return 0
     while (( waited < timeout )); do
@@ -489,8 +454,7 @@ wait_panel_healthy() { # timeout_sec
     return 1
 }
 
-# ── Дамп БД ─────────────────────────────────────────────────────────────────
-dump_to_file() { # out_path → 0/1
+dump_to_file() {
     local out="$1" err="${2:-/dev/null}"
     db_running || return 1
     mkdir -p "$(dirname "$out")" || return 1
@@ -507,9 +471,6 @@ free_space_bytes() {
     df -Pk "$INSTALL_DIR" 2>/dev/null | awk 'NR==2{print $4 * 1024}'
 }
 
-# ── Валидация загруженного дампа ────────────────────────────────────────────
-# Результат: VD_SQL (путь к распакованному SQL), VD_KIND, VD_TABLES, VD_COPY,
-#            VD_INSERTS, VD_TYPE, VD_PGVERSION, VD_LIST
 VD_SQL=""; VD_KIND=""; VD_TABLES=""; VD_COPY=0; VD_INSERTS=0
 VD_TYPE=""; VD_PGVERSION=""; VD_LIST=""; VD_REASON=""; VD_WORK=""; VD_SQL_RESULT=""
 
@@ -518,9 +479,7 @@ vd_fail() {
     return 1
 }
 
-# Опасные мета-команды psql и SQL-конструкции проверяются awk-парсером:
-# строки внутри COPY ... FROM stdin; ... \. — это данные, их не трогаем.
-vd_scan_sql() { # sql_file → 0/1, печатает найденные нарушения
+vd_scan_sql() {
     local file="$1"
     awk '
         BEGIN { incopy = 0 }
@@ -531,7 +490,6 @@ vd_scan_sql() { # sql_file → 0/1, печатает найденные нару
             line = $0
             low = tolower(line)
 
-            # psql мета-команды (строка начинается с обратного слэша)
             if (line ~ /^[[:space:]]*\\/) {
                 cmd = line
                 sub(/^[[:space:]]*/, "", cmd)
@@ -551,7 +509,6 @@ vd_scan_sql() { # sql_file → 0/1, печатает найденные нару
                 next
             }
 
-            # COPY ... PROGRAM / COPY ... TO 'файл' / FROM 'файл'
             if (low ~ /^[[:space:]]*copy[[:space:]]/) {
                 if (low ~ /program/) {
                     printf "BLOCK:строка %d: COPY с PROGRAM\n", NR
@@ -561,7 +518,6 @@ vd_scan_sql() { # sql_file → 0/1, печатает найденные нару
                 next
             }
 
-            # прочие опасные конструкции
             if (low ~ /alter[[:space:]]+system/) { printf "BLOCK:строка %d: ALTER SYSTEM\n", NR; next }
             if (low ~ /create[[:space:]]+extension/) { printf "BLOCK:строка %d: CREATE EXTENSION\n", NR; next }
             if (low ~ /pg_read_file|pg_write_file|pg_ls_dir|lo_import|lo_export|dblink/) {
@@ -574,7 +530,7 @@ vd_scan_sql() { # sql_file → 0/1, печатает найденные нару
     ' "$file" 2>/dev/null
 }
 
-vd_collect_meta() { # sql_file
+vd_collect_meta() {
     VD_TABLES=""
     VD_TABLES=$(grep -a -o -i -E 'CREATE TABLE (IF NOT EXISTS )?(public\.)?"?[a-zA-Z0-9_]+"?' "$1" 2>/dev/null |
         sed -E 's/.*CREATE TABLE (IF NOT EXISTS )?(public\.)?"?//I; s/"$//' |
@@ -598,7 +554,7 @@ vd_tables_ok() {
     (( total >= 3 ))
 }
 
-vd_extract_sql() { # file work → путь в VD_SQL_RESULT (без подоболочки: нужны VD_REASON/VD_KIND)
+vd_extract_sql() {
     local file="$1" work="$2" magic kind
     VD_SQL_RESULT=""
 
@@ -638,7 +594,6 @@ vd_extract_sql() { # file work → путь в VD_SQL_RESULT (без подоб�
                 return 1
             fi
 
-            # 1. листинг: без абсолютных путей и «..», только один дамп внутри
             local listing entries count ext
             listing=$(unzip -Z1 "$file" 2>/dev/null) || { vd_fail "архив не читается (повреждён zip)"; return 1; }
             entries=$(printf '%s\n' "$listing" | sed '/^$/d')
@@ -664,7 +619,6 @@ vd_extract_sql() { # file work → путь в VD_SQL_RESULT (без подоб�
                 return 1
             fi
 
-            # 2. распаковка одного файла с контролем размера
             local out="$work/dump_from_zip"
             if ! ( set -o pipefail; unzip -p "$file" "$entries" 2>/dev/null | head -c $((DUMP_MAX_SQL_BYTES + 1)) > "$out" ); then
                 true
@@ -713,7 +667,7 @@ vd_extract_sql() { # file work → путь в VD_SQL_RESULT (без подоб�
     esac
 }
 
-validate_dump() { # file → 0/1; при успехе VD_SQL указывает на SQL
+validate_dump() {
     local file="$1"
     VD_SQL=""; VD_REASON=""; VD_KIND=""; VD_TYPE=""; VD_LIST=""; VD_TABLES=""; VD_COPY=0; VD_INSERTS=0; VD_WORK=""
 
@@ -734,13 +688,11 @@ validate_dump() { # file → 0/1; при успехе VD_SQL указывает 
     VD_SQL="$sql"
     VD_TYPE="$VD_KIND"
 
-    # 1. признаки pg_dump
     if ! grep -aq -m1 -E '^-- PostgreSQL database dump|^-- Dumped from database version' "$sql" 2>/dev/null; then
         rm -rf "$work"; vd_fail "нет заголовка pg_dump — файл создан не pg_dump/pg_dumpall"
         return 1
     fi
 
-    # 2. опасные конструкции
     local blocks
     VD_EXPECT_DB="$DB_NAME"
     export VD_EXPECT_DB
@@ -752,7 +704,6 @@ validate_dump() { # file → 0/1; при успехе VD_SQL указывает 
         return 1
     fi
 
-    # 3. таблицы Remnawave и данные
     vd_collect_meta "$sql"
     if ! vd_tables_ok; then
         rm -rf "$work"
@@ -769,7 +720,6 @@ validate_dump() { # file → 0/1; при успехе VD_SQL указывает 
 }
 
 cleanup_vd() {
-    # удаляем только свою временную папку: при plain-дампе VD_SQL — это исходный файл
     if [[ -n "$VD_WORK" && -d "$VD_WORK" ]]; then
         rm -rf "$VD_WORK"
     fi
@@ -777,9 +727,7 @@ cleanup_vd() {
     VD_SQL=""
 }
 
-# ── Восстановление ──────────────────────────────────────────────────────────
-# Возвращает 0 при успехе; при провале пытается откатиться к safety-дампу.
-restore_sql_file() { # sql_file [expected_db] [safety_dump]
+restore_sql_file() {
     local sql="$1" target_db="${2:-}" safety="${3:-}"
     local log_file="$STATE_DIR/restore_$(date +%s).log"
 
@@ -822,7 +770,6 @@ restore_sql_file() { # sql_file [expected_db] [safety_dump]
     return 0
 }
 
-# ── Ротация архивов ─────────────────────────────────────────────────────────
 apply_retention() {
     local keep="${1:-$KEEP_FILES}"
     [[ "$keep" =~ ^[0-9]+$ ]] || keep=5
@@ -839,7 +786,6 @@ apply_retention() {
         fi
     done
 
-    # страховочные дампы перед импортом — не больше 3
     local safes=()
     mapfile -t safes < <(find "$SAFETY_DIR" -maxdepth 1 -type f -name 'pre_restore_*.sql.gz' -printf '%T@ %p\n' 2>/dev/null | sort -nr | cut -d' ' -f2-)
     i=0
@@ -848,11 +794,10 @@ apply_retention() {
         (( i > 3 )) && rm -f "$f" 2>/dev/null || true
     done
 
-    # входящие файлы старше недели
     find "$IMPORT_DIR" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
 }
 
-list_backups() { # печатает «путь<TAB>размер<TAB>дата» построчно
+list_backups() {
     find "$BACKUP_DIR" -maxdepth 1 -type f -name 'rw_db_backup_*.sql.gz' -printf '%T@ %p\n' 2>/dev/null |
         sort -nr | cut -d' ' -f2-
 }
@@ -865,8 +810,7 @@ bytes_of() {
     stat -c %s "$1" 2>/dev/null || echo 0
 }
 
-# ── Рассылка ────────────────────────────────────────────────────────────────
-notify_admins_text() { # text
+notify_admins_text() {
     local text="$1" uid
     local ids
     local -a arr=()
@@ -878,14 +822,11 @@ notify_admins_text() { # text
     done
 }
 
-notify_chat_text() { # text
+notify_chat_text() {
     [[ -z "$CHAT_ID" ]] && return 0
     tg_send "$CHAT_ID" "$1" > /dev/null 2>&1 || true
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  ТЕКСТЫ
-# ═══════════════════════════════════════════════════════════════════════════
 start_text() {
     local upd
     upd="$(update_line)"
@@ -964,8 +905,7 @@ keep_text() {
 Старые удаляются автоматически после каждого бэкапа." 
 }
 
-# ── Инструкция при превышении лимитов Telegram ─────────────────────────────
-limits_instruction() { # upload|download [size] [path]
+limits_instruction() {
     local kind="$1" size="${2:-}" path="${3:-}"
     local head target
     if [[ "$kind" == "upload" ]]; then
@@ -1005,14 +945,10 @@ limits_instruction() { # upload|download [size] [path]
 🛡 Панель на время импорта останавливается и поднимается обратно."
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  ФЛОУ: ЭКСПОРТ
-# ═══════════════════════════════════════════════════════════════════════════
-flow_export() { # chat_id thread_id user_id
+flow_export() {
     local chat_id="$1" thread="$2" uid="$3"
     local notify_to="$chat_id"
     local note=""
-    # дампы содержат персональные данные — в группу не отправляем
     if [[ "$chat_id" == -* ]]; then
         notify_to="$uid"
         note=$'\n\n📬 Файл отправлен вам в личку — в этом чате не публикую.'
@@ -1073,7 +1009,6 @@ $(escape_html "$reason")" "$(kb_remna)"
         local sent
         sent=$(tg_doc "$notify_to" "$file" "$caption" "$thread")
         if ! tg_ok "$sent"; then
-            # повтор без caption (например, проблема с разметкой)
             sent=$(tg_doc "$notify_to" "$file" "" "$thread")
         fi
         if ! tg_ok "$sent"; then
@@ -1094,9 +1029,6 @@ $(escape_html "$reason")" "$(kb_remna)"
     return 0
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  ФЛОУ: ИМПОРТ
-# ═══════════════════════════════════════════════════════════════════════════
 pending_file_path() {
     local p="$STATE_DIR/pending_import"
     [[ -f "$p" ]] && head -n 1 "$p" 2>/dev/null
@@ -1113,7 +1045,7 @@ pending_clear() {
     return 0
 }
 
-flow_import_prompt() { # chat_id thread
+flow_import_prompt() {
     local chat_id="$1" thread="$2"
     tg_send "$chat_id" "📥 <b>Импорт базы Remnawave</b>
 ➖➖➖➖➖
@@ -1124,7 +1056,7 @@ flow_import_prompt() { # chat_id thread
 Мусор и чужие дампы отклоню." "$(kb_remna)" "$thread" > /dev/null
 }
 
-flow_import_denied_reason() { # text
+flow_import_denied_reason() {
     local chat_id="$1" thread="$2" reason="$3"
     tg_send "$chat_id" "❌ <b>Файл отклонён</b>
 ➖➖➖➖➖
@@ -1133,10 +1065,9 @@ $(escape_html "$reason")
 Попробуйте другой дамп: <code>.sql.gz</code> из этой же панели." "$(kb_remna)" "$thread" > /dev/null
 }
 
-handle_document() { # chat_id thread user_id doc_id doc_name doc_size
+handle_document() {
     local chat_id="$1" thread="$2" uid="$3" doc_id="$4" doc_name="$5" doc_size="${6:-0}"
 
-    # импорт — только в личке: в группе дампы и команды не принимаем
     if [[ "$chat_id" == -* ]]; then
         tg_send "$uid" "📥 Файлы для импорта принимаю только в личке." "$(kb_remna)" > /dev/null
         return 0
@@ -1194,7 +1125,6 @@ handle_document() { # chat_id thread user_id doc_id doc_name doc_size
         return 0
     fi
 
-    # Проверка на уровне файла (до разбора SQL)
     local real_size
     real_size=$(bytes_of "$local_file")
     if (( real_size > TG_MAX_DOWNLOAD_MB * 1024 * 1024 )); then
@@ -1203,7 +1133,6 @@ handle_document() { # chat_id thread user_id doc_id doc_name doc_size
         return 0
     fi
 
-    # Полная проверка содержимого
     if ! validate_dump "$local_file"; then
         local reason="$VD_REASON"
         rm -f "$local_file"
@@ -1230,7 +1159,6 @@ $(escape_html "$reason")" "$(kb_remna)"
 
     [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "$summary" "$(kb_remna)"
 
-    # SQL остаётся во временной папке — при отмене уберём
     tg_send "$chat_id" "⚠️ <b>Подтвердите импорт</b>
 ➖➖➖➖➖
 База будет перезаписана данными из файла.
@@ -1245,7 +1173,7 @@ $(escape_html "$reason")" "$(kb_remna)"
     return 0
 }
 
-flow_import_run() { # chat_id thread user_id
+flow_import_run() {
     local chat_id="$1" thread="$2" uid="$3"
 
     local pending
@@ -1264,7 +1192,6 @@ flow_import_run() { # chat_id thread user_id
 4/4 запуск панели" "" "$thread")
     status_id="$(msg_id_of "$status_json")"
 
-    # повторная проверка (файл мог быть подменён на диске)
     if ! validate_dump "$pending"; then
         local reason="$VD_REASON"
         pending_clear
@@ -1347,10 +1274,7 @@ $(escape_html "$reason")" "$(kb_remna)"
     return 0
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  ФЛОУ: СПИСОК АРХИВОВ
-# ═══════════════════════════════════════════════════════════════════════════
-flow_list() { # chat_id thread
+flow_list() {
     local chat_id="$1" thread="$2"
     local files=()
     mapfile -t files < <(list_backups)
@@ -1389,7 +1313,7 @@ flow_list() { # chat_id thread
     return 0
 }
 
-flow_send_archive() { # chat_id thread index
+flow_send_archive() {
     local chat_id="$1" thread="$2" index="$3"
     local files=()
     mapfile -t files < <(list_backups)
@@ -1415,20 +1339,17 @@ flow_send_archive() { # chat_id thread index
     return 0
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  НАСТРОЙКИ: АДМИНЫ / РАСПИСАНИЕ / ХРАНЕНИЕ
-# ═══════════════════════════════════════════════════════════════════════════
-await_set() { # uid action param
+await_set() {
     mkdir -p "$STATE_DIR" 2>/dev/null
     printf '%s|%s\n' "$2" "${3:-}" > "$STATE_DIR/await_$1"
 }
 
-await_get() { # uid
+await_get() {
     local f="$STATE_DIR/await_$1"
     [[ -f "$f" ]] && head -n 1 "$f" 2>/dev/null
 }
 
-await_clear() { # uid
+await_clear() {
     rm -f "$STATE_DIR/await_$1" 2>/dev/null
     return 0
 }
@@ -1438,7 +1359,7 @@ cron_remove() {
     (crontab -l 2>/dev/null | grep -v 'rw-back-bot.sh cron') | crontab - 2>/dev/null || true
 }
 
-cron_apply() { # hours
+cron_apply() {
     local hours="$1"
     command -v crontab > /dev/null 2>&1 || return 1
     cron_remove
@@ -1457,8 +1378,7 @@ cron_apply() { # hours
     return $rc
 }
 
-# ── Единая точка обработки /start и кнопок ──────────────────────────────────
-send_main_menu() { # chat_id thread [edit_message_id]
+send_main_menu() {
     local chat_id="$1" thread="$2" edit_id="${3:-}"
     if [[ -n "$edit_id" ]]; then
         tg_edit "$chat_id" "$edit_id" "$(start_text)" "$KB_MAIN"
@@ -1467,9 +1387,6 @@ send_main_menu() { # chat_id thread [edit_message_id]
     fi
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  ОБРАБОТКА ОБНОВЛЕНИЙ
-# ═══════════════════════════════════════════════════════════════════════════
 handle_update() {
     local raw="$1" parsed kind uid chat_id thread text cb_id cb_data msg_id doc_id doc_name doc_size
 
@@ -1492,7 +1409,6 @@ handle_update() {
 
     [[ -z "$kind" || -z "$chat_id" || -z "$uid" ]] && return 0
 
-    # доступ только админам; пока админов нет — режим привязки по коду
     if ! is_admin "$uid"; then
         if [[ "$(admin_count)" -eq 0 ]]; then
             handle_binding "$kind" "$chat_id" "$thread" "$uid" "$text" "$cb_id"
@@ -1511,10 +1427,8 @@ handle_update() {
 
         local cmd
         cmd=$(printf '%s' "$text" | head -n 1 | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-        # /command@botname → /command
         cmd="${cmd%%@*}"
 
-        # ожидание ввода значения
         local awaiting
         awaiting="$(await_get "$uid")"
         if [[ -n "$awaiting" ]]; then
@@ -1581,7 +1495,6 @@ handle_update() {
         return 0
     fi
 
-    # ── callback ──
     tg_answer "$cb_id"
 
     case "$cb_data" in
@@ -1682,7 +1595,7 @@ $(admins_text)" "$(kb_admins)"
     return 0
 }
 
-apply_schedule() { # chat_id thread hours [edit_id]
+apply_schedule() {
     local chat_id="$1" thread="$2" hours="$3" edit_id="${4:-}"
     [[ "$hours" =~ ^[0-9]+$ ]] || {
         tg_send "$chat_id" "⚠️ Нужно число часов." "$(kb_schedule)" "$thread" > /dev/null
@@ -1713,7 +1626,7 @@ apply_schedule() { # chat_id thread hours [edit_id]
     return 0
 }
 
-apply_keep() { # chat_id thread value [edit_id]
+apply_keep() {
     local chat_id="$1" thread="$2" value="$3" edit_id="${4:-}"
     [[ "$value" =~ ^[0-9]+$ ]] || {
         tg_send "$chat_id" "⚠️ Нужно число." "$(kb_keep)" "$thread" > /dev/null
@@ -1740,7 +1653,7 @@ apply_keep() { # chat_id thread value [edit_id]
     return 0
 }
 
-add_admin_by_input() { # chat_id thread uid input
+add_admin_by_input() {
     local chat_id="$1" thread="$2" uid="$3" input="$4"
 
     [[ -z "$input" ]] && { tg_send "$chat_id" "⚠️ Пустое значение." "$(kb_admins)" "$thread" > /dev/null; return 0; }
@@ -1780,9 +1693,6 @@ $(admins_text)" "$(kb_admins)" "$thread" > /dev/null
     return 0
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  ЦИКЛ ОПРОСА
-# ═══════════════════════════════════════════════════════════════════════════
 serve() {
     require_deps || die "Нужны curl, jq, gzip. Установите: apt-get install -y curl jq gzip"
 
@@ -1801,7 +1711,6 @@ serve() {
     local username
     username=$(printf '%s' "$me" | jq -r '.result.username // "bot"' 2>/dev/null)
 
-    # админы задаются привязкой по коду из установщика (см. handle_binding)
     if [[ "$(admin_count)" -eq 0 ]]; then
         if [[ -n "$(setup_code_current)" ]]; then
             print_message "INFO" "Режим привязки: жду код из установщика"
@@ -1855,9 +1764,6 @@ serve() {
     done
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  РЕЖИМЫ CLI
-# ═══════════════════════════════════════════════════════════════════════════
 cmd_cron() {
     require_deps || die "нет зависимостей"
     [[ -n "${BOT_TOKEN:-}" ]] || die "нет BOT_TOKEN"
