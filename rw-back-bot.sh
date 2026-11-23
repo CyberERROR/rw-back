@@ -263,6 +263,7 @@ admin_count() {
 
 admin_list_text() {
     local ids id out="" i=1
+    local -a arr=()
     ids="$(normalize_ids "$BOT_ADMIN_IDS")"
     if [[ -z "$ids" ]]; then
         echo "—"
@@ -768,6 +769,7 @@ bytes_of() {
 notify_admins_text() { # text
     local text="$1" uid
     local ids
+    local -a arr=()
     ids="$(normalize_ids "$BOT_ADMIN_IDS")"
     [[ -z "$ids" ]] && return 0
     IFS=',' read -ra arr <<< "$ids"
@@ -1510,6 +1512,7 @@ ID можно узнать в @userinfobot.
             ;;
         a:del)
             local del_kb="" ids id
+            local -a arr=()
             ids="$(normalize_ids "$BOT_ADMIN_IDS")"
             if [[ -z "$ids" ]]; then
                 tg_edit "$chat_id" "$msg_id" "👥 Список пуст." "$(kb_admins)"
@@ -1781,6 +1784,7 @@ cmd_cron() {
 📅 $(date +'%d.%m.%Y %H:%M')"
 
     local ids uid
+    local -a arr=()
     ids="$(normalize_ids "$BOT_ADMIN_IDS")"
     if [[ -z "$ids" ]]; then
         log "админы не заданы — рассылать некому"
@@ -1817,6 +1821,7 @@ cmd_backup() {
 
     if [[ -n "${BOT_TOKEN:-}" ]]; then
         local ids uid
+        local -a arr=()
         ids="$(normalize_ids "$BOT_ADMIN_IDS")"
         if [[ -n "$ids" ]]; then
             IFS=',' read -ra arr <<< "$ids"

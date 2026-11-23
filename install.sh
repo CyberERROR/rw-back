@@ -250,7 +250,6 @@ wizard() {
     read -rp "   ${GREEN}──>${RESET} Ваш Telegram ID (админ): " CHAT_ID
     [[ ! "$CHAT_ID" =~ ^[0-9]+$ ]] && die "ID должен быть числом"
     BOT_ADMIN_IDS="$CHAT_ID"
-    read -rp "   ${GREEN}──>${RESET} Thread ID для уведомлений (Enter — нет): " TG_THREAD
     echo ""
 
     print_message "ACTION" "2. База данных"
