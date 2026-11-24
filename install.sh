@@ -473,7 +473,7 @@ load_config() {
     BOT_TOKEN=""; CHAT_ID=""; BOT_ADMIN_IDS=""
     DB_USER="postgres"; DB_NAME="postgres"; DB_CONTAINER="remnawave-db"
     PANEL_CONTAINER="remnawave"; CACHE_CONTAINER="remnawave-redis"
-    CRON_HOURS="0"; KEEP_FILES="5"; KEEP_DAYS="0"; PANEL_DIR="/opt/remnawave"
+    CRON_HOURS="0"; KEEP_FILES="5"; KEEP_DAYS="0"; KEEP_MODE="files"; PANEL_DIR="/opt/remnawave"
 
     if [[ -f "$CONFIG_FILE" ]]; then
         source "$CONFIG_FILE"
@@ -488,13 +488,18 @@ load_config() {
     CRON_HOURS=${CRON_HOURS:-0}
     KEEP_FILES=${KEEP_FILES:-5}
     KEEP_DAYS=${KEEP_DAYS:-0}
+    KEEP_MODE=${KEEP_MODE:-files}
     BOT_ADMIN_IDS=${BOT_ADMIN_IDS:-}
     [[ "$CRON_HOURS" =~ ^[0-9]+$ ]] || CRON_HOURS=0
     [[ "$KEEP_FILES" =~ ^[0-9]+$ ]] || KEEP_FILES=5
     [[ "$KEEP_DAYS" =~ ^[0-9]+$ ]] || KEEP_DAYS=0
+    [[ "$KEEP_MODE" == "days" ]] || KEEP_MODE="files"
     CRON_HOURS=$((10#$CRON_HOURS))
     KEEP_FILES=$((10#$KEEP_FILES))
     KEEP_DAYS=$((10#$KEEP_DAYS))
+    if [[ "$KEEP_MODE" == "days" ]] && (( KEEP_DAYS < 1 )); then
+        KEEP_MODE="files"
+    fi
     ui_colors_init
 }
 
@@ -514,6 +519,7 @@ save_config() {
         printf 'CRON_HOURS=%q\n' "$CRON_HOURS"
         printf 'KEEP_FILES=%q\n' "$KEEP_FILES"
         printf 'KEEP_DAYS=%q\n' "$KEEP_DAYS"
+        printf 'KEEP_MODE=%q\n' "$KEEP_MODE"
         printf 'PANEL_DIR=%q\n' "$PANEL_DIR"
     } > "$tmp" || return 1
     chmod 600 "$tmp" 2>/dev/null
@@ -934,24 +940,36 @@ wizard() {
     echo ""
 
     print_message "ACTION" "4. Хранение архивов"
-    while true; do
-        ui_input input "Сколько файлов хранить (1–200)" "$KEEP_FILES" || { print_message "ERROR" "Ввод завершён"; return 1; }
-        input="${input:-$KEEP_FILES}"
-        if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= 200 )); then
-            KEEP_FILES="$input"
-            break
-        fi
-        print_message "ERROR" "Введите число от 1 до 200"
-    done
-    while true; do
-        ui_input input "Сколько дней хранить (0 — без ограничения)" "$KEEP_DAYS" || { print_message "ERROR" "Ввод завершён"; return 1; }
-        input="${input:-$KEEP_DAYS}"
-        if [[ "$input" =~ ^[0-9]+$ ]] && (( input <= 365 )); then
-            KEEP_DAYS="$input"
-            break
-        fi
-        print_message "ERROR" "Введите число от 0 до 365"
-    done
+    menu_reset
+    menu_add 1 "По файлам — оставлять последние N"
+    menu_add 2 "По дням — удалять старше N дней"
+    menu_choose keep_pick
+    case "$keep_pick" in
+        2)
+            KEEP_MODE="days"
+            while true; do
+                ui_input input "Сколько дней хранить (1–365)" "${KEEP_DAYS:-7}" || { print_message "ERROR" "Ввод завершён"; return 1; }
+                input="${input:-7}"
+                if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= 365 )); then
+                    KEEP_DAYS="$input"
+                    break
+                fi
+                print_message "ERROR" "Введите число от 1 до 365"
+            done
+            ;;
+        *)
+            KEEP_MODE="files"
+            while true; do
+                ui_input input "Сколько файлов хранить (1–200)" "$KEEP_FILES" || { print_message "ERROR" "Ввод завершён"; return 1; }
+                input="${input:-$KEEP_FILES}"
+                if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= 200 )); then
+                    KEEP_FILES="$input"
+                    break
+                fi
+                print_message "ERROR" "Введите число от 1 до 200"
+            done
+            ;;
+    esac
 
     save_config || die "Не удалось сохранить конфигурацию"
     print_message "SUCCESS" "Настройки сохранены"
@@ -1471,8 +1489,7 @@ menu_settings() {
         menu_add 2 "Контейнер и имя базы"
         menu_add 3 "Каталог панели"
         menu_add 4 "Админы бота"
-        menu_add 5 "Сколько архивов хранить"
-        menu_add 6 "Сколько дней хранить"
+        menu_add 5 "Хранение: по файлам или по дням"
         menu_gap
         menu_add 0 "Назад"
         local choice input
@@ -1512,24 +1529,39 @@ menu_settings() {
                 fi
                 ;;
             5)
-                ui_input input "Сколько архивов хранить (1–200)" "$KEEP_FILES" || return 1
-                input="${input:-$KEEP_FILES}"
-                if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= 200 )); then
-                    KEEP_FILES="$input"
-                    save_config && print_message "SUCCESS" "Лимит сохранён" || print_message "ERROR" "Не удалось сохранить конфигурацию"
+                menu_reset
+                if [[ "$KEEP_MODE" == "days" ]]; then
+                    menu_add 1 "По файлам — оставлять последние N"
+                    menu_add 2 "По дням — удалять старше N дней  ✓ сейчас"
                 else
-                    print_message "ERROR" "Число от 1 до 200"
+                    menu_add 1 "По файлам — оставлять последние N  ✓ сейчас"
+                    menu_add 2 "По дням — удалять старше N дней"
                 fi
-                ;;
-            6)
-                ui_input input "Сколько дней хранить (0 — без ограничения)" "$KEEP_DAYS" || return 1
-                input="${input:-$KEEP_DAYS}"
-                if [[ "$input" =~ ^[0-9]+$ ]] && (( input <= 365 )); then
-                    KEEP_DAYS="$input"
-                    save_config && print_message "SUCCESS" "Срок хранения сохранён" || print_message "ERROR" "Не удалось сохранить конфигурацию"
-                else
-                    print_message "ERROR" "Число от 0 до 365"
-                fi
+                menu_choose input
+                case "$input" in
+                    1)
+                        ui_input input "Сколько файлов хранить (1–200)" "$KEEP_FILES" || return 1
+                        input="${input:-$KEEP_FILES}"
+                        if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= 200 )); then
+                            KEEP_FILES="$input"
+                            KEEP_MODE="files"
+                            save_config && print_message "SUCCESS" "Хранение по файлам: ${KEEP_FILES} шт." || print_message "ERROR" "Не удалось сохранить конфигурацию"
+                        else
+                            print_message "ERROR" "Число от 1 до 200"
+                        fi
+                        ;;
+                    2)
+                        ui_input input "Сколько дней хранить (1–365)" "${KEEP_DAYS:-7}" || return 1
+                        input="${input:-7}"
+                        if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= 365 )); then
+                            KEEP_DAYS="$input"
+                            KEEP_MODE="days"
+                            save_config && print_message "SUCCESS" "Хранение по дням: ${KEEP_DAYS} дн." || print_message "ERROR" "Не удалось сохранить конфигурацию"
+                        else
+                            print_message "ERROR" "Число от 1 до 365"
+                        fi
+                        ;;
+                esac
                 ;;
             0) return ;;
         esac
@@ -1539,12 +1571,15 @@ menu_settings() {
 }
 
 show_main_status() {
-    local version cron_txt tg_state archives remote days_txt
+    local version cron_txt tg_state archives remote keep_txt
     local -a rows
     version="$(local_version)"
     archives=$(find "$BACKUP_DIR" -maxdepth 1 -name 'rw_db_backup_*.sql.gz' 2>/dev/null | wc -l | tr -d ' ')
-    days_txt="${KEEP_DAYS} дн."
-    (( KEEP_DAYS == 0 )) && days_txt="без ограничения"
+    if [[ "$KEEP_MODE" == "days" ]]; then
+        keep_txt="${KEEP_DAYS} дн."
+    else
+        keep_txt="${KEEP_FILES} шт."
+    fi
     cron_txt="${YELLOW}выключен${RESET}"
     (( CRON_HOURS > 0 )) && cron_txt="${BOLD}каждые ${CRON_HOURS} ч${RESET}"
     if [[ -z "$BOT_TOKEN" ]]; then
@@ -1558,7 +1593,7 @@ show_main_status() {
     fi
     rows=(
         "База данных" "${BOLD}${DB_CONTAINER}${RESET}"
-        "Архивы" "${BOLD}${archives}${RESET}${LIGHT_GRAY} · ${KEEP_FILES} шт. · ${days_txt}${RESET}"
+        "Архивы" "${BOLD}${archives}${RESET}${LIGHT_GRAY} · ${keep_txt}${RESET}"
         "Автобэкап" "$cron_txt"
         "Telegram" "$tg_state"
     )

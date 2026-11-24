@@ -10,7 +10,7 @@
   <img src="https://skillicons.dev/icons?i=bash,docker,linux,ubuntu,postgres&theme=dark" alt="Bash · Docker · Linux · Ubuntu · PostgreSQL"/>
 </p>
 
-[![Version](https://img.shields.io/badge/version-2.2.4-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](VERSION)
+[![Version](https://img.shields.io/badge/version-2.2.5-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](VERSION)
 [![Remnawave](https://img.shields.io/badge/Remnawave-3.4.11-2563eb?style=for-the-badge&labelColor=0d1117)](https://github.com/remnawave/backend)
 [![Stars](https://img.shields.io/github/stars/CyberERROR/rw-back?style=for-the-badge&labelColor=0d1117&logo=github&label=stars&color=7c3aed)](https://github.com/CyberERROR/rw-back/stargazers)
 [![Telegram](https://img.shields.io/badge/Telegram-%D1%87%D0%B0%D1%82-9333ea?style=for-the-badge&labelColor=0d1117&logo=telegram&logoColor=white)](https://t.me/+YV_BO1cmGWw5OTdi)
@@ -73,7 +73,7 @@
 - ✅ дамп `pg_dumpall` в `.sql.gz`
 - ✅ отправка админам в Telegram с датой, размером и метриками сервера
 - ✅ автобэкап каждые 3/6/12/24 ч или своё
-- ✅ хранение по числу файлов (2/5/10 или своё) или по сроку в днях
+- ✅ хранение на выбор: по числу файлов (2/5/10 или своё) **или** по сроку в днях
 
 </td>
 <td width="50%" valign="top">
@@ -136,7 +136,7 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 | Раздел | Что внутри |
 |:--|:--|
 | 💎 **Remnawave** | 📤 Экспорт · 📥 Импорт · 📦 Бэкапы на сервере |
-| ⚙️ **Настройки** | 👥 Админы · 🕒 Расписание · 📦 Хранить файлов · 🗓 Хранить дней |
+| ⚙️ **Настройки** | 👥 Админы · 🕒 Расписание · 🗃 Хранение архивов |
 
 Админы добавляются по `ID` или `@username`; последнего удалить нельзя.
 Экспорт и импорт доступны только админам, дампы — только в личку.
