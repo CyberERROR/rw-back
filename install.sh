@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 set -o pipefail
 
-if [[ -t 0 ]]; then
-    RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; CYAN=$'\e[36m'
-    GRAY=$'\e[37m'; LIGHT_GRAY=$'\e[90m'; BOLD=$'\e[1m'; RESET=$'\e[0m'
-    MUTED_GREEN=$'\e[38;5;71m'; UI_SEL_BG=$'\e[48;5;22m\e[97m'
-else
-    RED=""; GREEN=""; YELLOW=""; CYAN=""; GRAY=""; LIGHT_GRAY=""; BOLD=""; RESET=""
-    MUTED_GREEN=""; UI_SEL_BG=""
-fi
+ui_color_capable() {
+    [[ -t 1 && "${TERM:-dumb}" != "dumb" && "${RW_PLAIN_UI:-0}" != "1" && -z "${NO_COLOR:-}" ]]
+}
+
+ui_colors_init() {
+    if ui_color_capable; then
+        RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; CYAN=$'\e[36m'
+        GRAY=$'\e[37m'; LIGHT_GRAY=$'\e[90m'; BOLD=$'\e[1m'; RESET=$'\e[0m'
+        MUTED_GREEN=$'\e[38;5;71m'; UI_SEL_BG=$'\e[48;5;22m\e[97m'
+    else
+        RED=""; GREEN=""; YELLOW=""; CYAN=""; GRAY=""; LIGHT_GRAY=""; BOLD=""; RESET=""
+        MUTED_GREEN=""; UI_SEL_BG=""
+    fi
+}
+
+ui_colors_init
 
 SELF_PATH="$(realpath "$0" 2>/dev/null || echo "$0")"
 SELF_DIR="$(dirname "$SELF_PATH")"
@@ -484,6 +492,7 @@ load_config() {
     [[ "$KEEP_FILES" =~ ^[0-9]+$ ]] || KEEP_FILES=5
     CRON_HOURS=$((10#$CRON_HOURS))
     KEEP_FILES=$((10#$KEEP_FILES))
+    ui_colors_init
 }
 
 save_config() {
