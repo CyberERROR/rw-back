@@ -4,7 +4,7 @@
 
 **Резервное копирование базы Remnawave — одной кнопкой, с доставкой в Telegram**
 
-[![version](https://img.shields.io/badge/version-2.2.8-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](../VERSION)
+[![version](https://img.shields.io/badge/version-2.2.9-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](../VERSION)
 [![Remnawave](https://img.shields.io/badge/Remnawave-3.4.11-2563eb?style=for-the-badge&labelColor=0d1117)](https://github.com/remnawave/backend)
 [![bash](https://img.shields.io/badge/bash-5%2B-0891b2?style=for-the-badge&labelColor=0d1117&logo=gnubash&logoColor=white)](../install.sh)
 [![license](https://img.shields.io/badge/license-GPLv3-4f46e5?style=for-the-badge&labelColor=0d1117)](../LICENSE)
@@ -34,12 +34,15 @@
 
 </details>
 
-## ✨ Что нового в 2.2.8
+## ✨ Что нового в 2.2.9
 
-- 🔄 проверка обновления при каждой отправке бэкапа — кэш больше не прячет новый релиз
-- ⌨️ команда `/update` — проверка версии в любой момент
-- ⚡ файл уходит первым, метрики сервера дозаполняются после отправки
-- 🗃 хранение архивов: по числу файлов **или** по сроку в днях
+- 🔔 автобэкап больше не молчит: при сбое приходит сообщение с причиной
+- 🩺 точные причины вместо «pg_dumpall вернул ошибку»: нет контейнера БД · пустой дамп · обрыв соединения · файл не доставлен
+- 📅 статус в боте: последний бэкап, следующий запуск, последняя ошибка
+- 🔁 неудачная попытка тоже фиксируется — каскада запусков каждые 5 минут нет
+- ✋ `rw-back cron --force` — прогон вручную, расписание не сдвигается
+- ⏱ запас 5 минут: тик, пришедший на секунду раньше, больше не съедает час
+- 🖥 в консольном меню видно «след. 10:00» или «⚠ сбой · причина»
 
 ## 🚀 Установка
 

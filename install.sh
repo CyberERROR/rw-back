@@ -1570,8 +1570,24 @@ menu_settings() {
     done
 }
 
+cron_next_hour_ts() {
+    local anchor=0 now due rem
+    [[ -f "$STATE_DIR/cron_last_run" ]] && anchor=$(head -n 1 "$STATE_DIR/cron_last_run" 2>/dev/null)
+    [[ "$anchor" =~ ^[0-9]+$ ]] || anchor=0
+    now=$(date +%s)
+    if (( anchor > 0 )); then
+        due=$((anchor + CRON_HOURS * 3600 - 300))
+    else
+        due=$now
+    fi
+    (( due < now )) && due=$now
+    rem=$((due % 3600))
+    (( rem > 0 )) && due=$((due + 3600 - rem))
+    printf '%s' "$due"
+}
+
 show_main_status() {
-    local version cron_txt tg_state archives remote keep_txt
+    local version cron_txt tg_state archives remote keep_txt next_ts result
     local -a rows
     version="$(local_version)"
     archives=$(find "$BACKUP_DIR" -maxdepth 1 -name 'rw_db_backup_*.sql.gz' 2>/dev/null | wc -l | tr -d ' ')
@@ -1581,7 +1597,17 @@ show_main_status() {
         keep_txt="${KEEP_FILES} шт."
     fi
     cron_txt="${YELLOW}выключен${RESET}"
-    (( CRON_HOURS > 0 )) && cron_txt="${BOLD}каждые ${CRON_HOURS} ч${RESET}"
+    if (( CRON_HOURS > 0 )); then
+        next_ts=$(cron_next_hour_ts)
+        cron_txt="${BOLD}каждые ${CRON_HOURS} ч${RESET}${LIGHT_GRAY} · след. $(date -d "@$next_ts" +'%H:%M' 2>/dev/null)${RESET}"
+        result=""
+        [[ -f "$STATE_DIR/cron_last_result" ]] && result=$(head -n 1 "$STATE_DIR/cron_last_result" 2>/dev/null)
+        if [[ "$result" == fail\|* ]]; then
+            result="${result#fail|}"
+            (( ${#result} > 38 )) && result="${result:0:35}…"
+            cron_txt="${RED}⚠ сбой${RESET}${LIGHT_GRAY} · ${result}${RESET}"
+        fi
+    fi
     if [[ -z "$BOT_TOKEN" ]]; then
         tg_state="${YELLOW}не настроен · пункт 4${RESET}"
     elif bot_service_active; then
@@ -1646,6 +1672,7 @@ rw-back — бэкап базы Remnawave + Telegram-бот
 
   rw-back                открыть меню
   rw-back backup         создать бэкап (отправка админам в Telegram)
+  rw-back cron --force   автобэкап сейчас, расписание не сдвигается
   rw-back restore FILE   восстановить БД из файла
   rw-back list           список архивов
   rw-back validate FILE  проверить дамп
@@ -1681,11 +1708,12 @@ main() {
             migrate_bot_service || print_message "WARN" "Службу старого формата обновить не удалось"
             main_menu
             ;;
-        backup|restore|list|validate)
+        backup|restore|list|validate|cron)
             load_config
             [[ -x "$BOT_SCRIPT" ]] || die "rw-back не установлен. Запустите: $0"
             case "$cmd" in
                 backup) exec bash "$BOT_SCRIPT" backup ;;
+                cron) shift; exec bash "$BOT_SCRIPT" cron "$@" ;;
                 list) exec bash "$BOT_SCRIPT" list ;;
                 restore) shift; exec bash "$BOT_SCRIPT" restore "$@" ;;
                 validate) shift; exec bash "$BOT_SCRIPT" validate "$@" ;;

@@ -713,16 +713,55 @@ wait_panel_healthy() {
     return 1
 }
 
+DUMP_FAIL=""
+
+dump_error_line() {
+    local err="$1" line=""
+    if [[ -f "$err" ]]; then
+        line=$(grep -aE 'FATAL|ERROR|error|could not|denied|No such|not found|refused' "$err" 2>/dev/null | tail -n 1)
+        [[ -n "$line" ]] || line=$(tail -n 1 "$err" 2>/dev/null)
+    fi
+    line=$(printf '%s' "$line" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    (( ${#line} > 160 )) && line="${line:0:157}…"
+    [[ -n "$line" ]] || line="pg_dumpall завершился с ошибкой без текста"
+    printf '%s' "$line"
+}
+
 dump_to_file() {
     local out="$1" err="${2:-/dev/null}"
-    db_running || return 1
-    mkdir -p "$(dirname "$out")" || return 1
-    if ! ( set -o pipefail; docker exec "$DB_CONTAINER" pg_dumpall -c -U "$DB_USER" 2> "$err" | gzip -9 > "$out" ); then
-        rm -f "$out"
+    DUMP_FAIL=""
+    if ! db_running; then
+        DUMP_FAIL="контейнер БД ${DB_CONTAINER} не запущен"
         return 1
     fi
-    [[ -s "$out" ]] || { rm -f "$out"; return 1; }
-    gzip -t "$out" > /dev/null 2>&1 || { rm -f "$out"; return 1; }
+    if ! mkdir -p "$(dirname "$out")" 2>/dev/null; then
+        DUMP_FAIL="нет доступа к каталогу ${out%/*}"
+        return 1
+    fi
+    [[ -f "$err" ]] && : > "$err" 2>/dev/null
+    if ! ( set -o pipefail; docker exec "$DB_CONTAINER" pg_dumpall -c -U "$DB_USER" 2> "$err" | gzip -9 > "$out" ); then
+        rm -f "$out"
+        DUMP_FAIL="$(dump_error_line "$err")"
+        return 1
+    fi
+    if [[ ! -s "$out" ]]; then
+        rm -f "$out"
+        DUMP_FAIL="дамп получился пустым"
+        return 1
+    fi
+    if ! gzip -t "$out" > /dev/null 2>&1; then
+        rm -f "$out"
+        DUMP_FAIL="архив повреждён (gzip -t)"
+        return 1
+    fi
+    local raw
+    raw=$(gzip -l "$out" 2>/dev/null | awk 'NR==2{print $2}')
+    [[ "$raw" =~ ^[0-9]+$ ]] || raw=0
+    if (( raw < 1024 )); then
+        rm -f "$out"
+        DUMP_FAIL="дамп слишком мал (${raw} Б) — pg_dumpall не отдал данные"
+        return 1
+    fi
     return 0
 }
 
@@ -1168,17 +1207,24 @@ remna_text() {
 }
 
 settings_text() {
-    local cron_txt="выключено" keep_txt
+    local cron_txt="выключено" keep_txt extra="" line
     (( CRON_HOURS > 0 )) && cron_txt="каждые ${CRON_HOURS} ч"
     if [[ "$KEEP_MODE" == "days" ]]; then
         keep_txt="🗓 ${KEEP_DAYS} дн."
     else
         keep_txt="📦 ${KEEP_FILES} шт."
     fi
+    if (( CRON_HOURS > 0 )); then
+        line=$(cron_fail_text)
+        [[ -n "$line" ]] && extra+=$'\n'"${line}"
+        line=$(cron_last_ok_text)
+        [[ -n "$line" ]] && extra+=$'\n'"${line}"
+        extra+=$'\n'"$(cron_next_run_text)"
+    fi
     printf '%s' "⚙️ <b>Настройки</b>
 ➖➖➖➖➖
 👥 Админов: <b>$(admin_count)</b>
-🕒 Расписание: <b>${cron_txt}</b>
+🕒 Расписание: <b>${cron_txt}</b>${extra}
 🗃 Хранение: <b>${keep_txt}</b>"
 }
 
@@ -1226,13 +1272,23 @@ storage_text() {
 }
 
 schedule_text() {
-    local cron_txt="выключено"
+    local cron_txt="выключено" extra="" line
     (( CRON_HOURS > 0 )) && cron_txt="каждые ${CRON_HOURS} ч"
+    if (( CRON_HOURS > 0 )); then
+        line=$(cron_fail_text)
+        [[ -n "$line" ]] && extra+=$'\n'"${line}"
+        line=$(cron_last_ok_text)
+        [[ -n "$line" ]] && extra+=$'\n'"${line}"
+        extra+=$'\n'"$(cron_next_run_text)"
+        if ! cron_daemon_active; then
+            extra+=$'\n'"⚠️ Служба cron не запущена"
+        fi
+    fi
     printf '%s' "🕒 <b>Расписание автобэкапа</b>
 ➖➖➖➖➖
-Сейчас: <b>${cron_txt}</b>
+Сейчас: <b>${cron_txt}</b>${extra}
 
-Выберите интервал — дамп будет приходить в личку админам." 
+Выберите интервал — дамп будет приходить в личку админам."
 }
 
 keep_text() {
@@ -1328,8 +1384,7 @@ flow_export() {
     err="$STATE_DIR/dump_${ts}.err"
 
     if ! dump_to_file "$file" "$err"; then
-        local reason="pg_dumpall вернул ошибку"
-        [[ -s "$err" ]] && reason=$(tail -n 3 "$err" | tr '\n' ' ')
+        local reason="${DUMP_FAIL:-дамп не создан}"
         rm -f "$err"
         if [[ -n "$status_id" ]]; then
             tg_edit "$notify_to" "$status_id" "❌ <b>Дамп не создан</b>
@@ -1585,7 +1640,8 @@ $(escape_html "$reason")" "$(kb_remna)"
         cleanup_vd; pending_clear "$uid"
         [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "❌ <b>Импорт отменён</b>
 ➖➖➖➖➖
-Не удалось сделать страховочный дамп — база не тронута." "$(kb_remna)"
+Не удалось сделать страховочный дамп — база не тронута.
+⚠️ $(escape_html "${DUMP_FAIL:-дамп не создан}")" "$(kb_remna)"
         return 0
     fi
 
@@ -2061,6 +2117,19 @@ apply_schedule() {
 ➖➖➖➖➖
 ⏰ Каждые <b>${hours} ч</b>
 📥 Дамп придёт в личку админам"
+        if ! cron_task_present; then
+            text+="
+
+⚠️ Задача в cron не записалась — автобэкап не сработает.
+<code>apt-get install -y cron</code>"
+        elif ! cron_daemon_active; then
+            text+="
+
+⚠️ Служба cron не запущена — автобэкап не сработает.
+<code>systemctl enable --now cron</code>"
+        else
+            text+=$'\n'"⏭ Ближайший: <b>$(fmt_ts "$(cron_next_run)")</b>"
+        fi
     fi
 
     if [[ -n "$edit_id" ]]; then
@@ -2313,6 +2382,117 @@ serve() {
     done
 }
 
+cron_state_read() {
+    local file="$STATE_DIR/$1" value=""
+    [[ -f "$file" ]] && value=$(head -n 1 "$file" 2>/dev/null)
+    [[ "$value" =~ ^[0-9]+$ ]] || value=0
+    printf '%s' "$value"
+}
+
+cron_state_put() {
+    local file="$STATE_DIR/$1" value="$2"
+    if printf '%s\n' "$value" > "$file.tmp.$$" 2>/dev/null && mv -f "$file.tmp.$$" "$file" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$file.tmp.$$" 2>/dev/null
+    return 1
+}
+
+cron_last_result() {
+    local file="$STATE_DIR/cron_last_result"
+    [[ -f "$file" ]] || return 0
+    head -n 1 "$file" 2>/dev/null
+}
+
+cron_mark() {
+    local stamp="$1" manual="$2" result="$3"
+    (( manual == 0 )) && cron_state_put cron_last_run "$stamp"
+    cron_state_put cron_last_result "$result"
+    return 0
+}
+
+fmt_ts() {
+    local stamp="$1"
+    (( stamp > 0 )) || { printf '—'; return 0; }
+    if [[ "$(date -d "@$stamp" +%Y-%m-%d 2>/dev/null)" == "$(date +%Y-%m-%d)" ]]; then
+        date -d "@$stamp" +'%H:%M' 2>/dev/null || printf '—'
+    else
+        date -d "@$stamp" +'%d.%m %H:%M' 2>/dev/null || printf '—'
+    fi
+}
+
+cron_next_run() {
+    (( CRON_HOURS > 0 )) || { printf '0'; return 0; }
+    local anchor now due rem
+    anchor=$(cron_state_read cron_last_run)
+    now=$(date +%s)
+    if (( anchor > 0 )); then
+        due=$((anchor + CRON_HOURS * 3600 - 300))
+    else
+        due=$now
+    fi
+    (( due < now )) && due=$now
+    rem=$((due % 3600))
+    (( rem > 0 )) && due=$((due + 3600 - rem))
+    printf '%s' "$due"
+}
+
+cron_next_run_text() {
+    (( CRON_HOURS > 0 )) || return 0
+    printf '⏭ Следующий: <b>%s</b>' "$(fmt_ts "$(cron_next_run)")"
+}
+
+cron_last_ok_text() {
+    local ok
+    ok=$(cron_state_read cron_last_ok)
+    (( ok > 0 )) || return 0
+    printf '✅ Последний: <b>%s</b>' "$(fmt_ts "$ok")"
+}
+
+cron_fail_text() {
+    local result reason
+    result=$(cron_last_result)
+    [[ "$result" == fail\|* ]] || return 0
+    reason="${result#fail|}"
+    (( ${#reason} > 60 )) && reason="${reason:0:57}…"
+    printf '❗️ Сбой: %s' "$(escape_html "$reason")"
+}
+
+cron_daemon_active() {
+    command -v systemctl > /dev/null 2>&1 || return 0
+    systemctl is-active --quiet cron 2>/dev/null && return 0
+    systemctl is-active --quiet crond 2>/dev/null && return 0
+    pgrep -x cron > /dev/null 2>&1 && return 0
+    pgrep -x crond > /dev/null 2>&1 && return 0
+    return 1
+}
+
+cron_task_present() {
+    crontab -l 2>/dev/null | grep -q 'rw-back-bot.sh cron'
+}
+
+cron_notify_fail() {
+    local reason="$1" ids uid response next_txt
+    local -a arr=()
+    log "автобэкап не удался: ${reason}"
+    [[ -n "${BOT_TOKEN:-}" ]] || return 0
+    ids="$(normalize_ids "${BOT_ADMIN_IDS:-}")"
+    [[ -n "$ids" ]] || return 0
+    next_txt="$(fmt_ts "$(cron_next_run)")"
+    IFS=',' read -ra arr <<< "$ids"
+    for uid in "${arr[@]}"; do
+        response=$(tg_send "$uid" "❌ <b>Автобэкап не удался</b>
+➖➖➖➖➖
+🕒 $(date +'%d.%m %H:%M')
+⚠️ $(escape_html "$reason")
+⏭ Следующая попытка: <b>${next_txt}</b>
+
+Лог: <code>/var/log/rw-back-cron.log</code>")
+        tg_ok "$response" || log "не удалось сообщить админу ${uid} о сбое"
+    done
+    return 0
+}
+
 cmd_cron() {
     require_deps || die "нет зависимостей"
 
@@ -2322,52 +2502,78 @@ cmd_cron() {
     flock -w 300 9 || die "операция уже выполняется"
 
     (( CRON_HOURS > 0 )) || { log "расписание выключено — выхожу"; return 0; }
-    local now last=0 interval
+
+    local manual=0 arg
+    for arg in "$@"; do
+        case "$arg" in
+            --force|force) manual=1 ;;
+        esac
+    done
+    [[ -t 0 ]] && manual=1
+
+    local now last interval
     now=$(date +%s)
-    if [[ -f "$STATE_DIR/cron_last_run" ]]; then
-        last=$(head -n 1 "$STATE_DIR/cron_last_run" 2>/dev/null)
-        [[ "$last" =~ ^[0-9]+$ ]] || last=0
-    fi
+    last=$(cron_state_read cron_last_run)
     interval=$((CRON_HOURS * 3600))
-    if (( last > 0 && now - last < interval )); then
+    if (( manual == 0 && last > 0 && now - last < interval - 300 )); then
         log "интервал ${CRON_HOURS} ч ещё не истёк — пропускаю запуск"
         return 0
     fi
-    db_running || die "контейнер БД не запущен"
+    (( manual == 1 )) && log "ручной запуск автобэкапа — расписание не сдвигается"
 
     local ts file
     ts="$(date +%Y-%m-%d_%H_%M_%S)"
     file="$BACKUP_DIR/rw_db_backup_${ts}.sql.gz"
 
-    dump_to_file "$file" "$STATE_DIR/cron.err" || die "pg_dumpall вернул ошибку"
-    apply_retention "$KEEP_FILES"
-    if ! printf '%s\n' "$now" > "$STATE_DIR/cron_last_run.tmp" || ! mv -f "$STATE_DIR/cron_last_run.tmp" "$STATE_DIR/cron_last_run"; then
-        log "не удалось сохранить время автобэкапа — при следующем запуске возможна повторная копия"
+    if ! dump_to_file "$file" "$STATE_DIR/cron.err"; then
+        local reason="${DUMP_FAIL:-дамп не создан}"
+        cron_mark "$now" "$manual" "fail|${reason}"
+        cron_notify_fail "$reason"
+        die "автобэкап не удался: ${reason}"
     fi
+    apply_retention "$KEEP_FILES"
+    cron_mark "$now" "$manual" "ok"
+    cron_state_put cron_last_ok "$(date +%s)"
 
     local size
     size=$(human_size_fast "$file")
 
-    local ids uid
+    local ids uid response
     local -a arr=()
-    ids="$(normalize_ids "$BOT_ADMIN_IDS")"
+    ids="$(normalize_ids "${BOT_ADMIN_IDS:-}")"
     if [[ -z "$ids" || -z "${BOT_TOKEN:-}" ]]; then
         log "автобэкап сохранён локально: Telegram не настроен или админы не заданы"
         return 0
     fi
 
-    local big=0
+    local big=0 delivered=0
     (( $(bytes_of "$file") > TG_MAX_UPLOAD_MB * 1024 * 1024 )) && big=1
 
     IFS=',' read -ra arr <<< "$ids"
     for uid in "${arr[@]}"; do
         if (( big == 1 )); then
-            tg_send "$uid" "$(limits_instruction upload "$size" "$file")" > /dev/null 2>&1 || true
+            response=$(tg_send "$uid" "$(limits_instruction upload "$size" "$file")")
+            if tg_ok "$response"; then
+                delivered=1
+            else
+                log "не удалось отправить админу ${uid} инструкцию по загрузке"
+            fi
         else
-            send_backup_file "$uid" "$file" "" > /dev/null 2>&1 || true
+            if send_backup_file "$uid" "$file" ""; then
+                delivered=1
+            else
+                log "не удалось отправить бэкап админу ${uid}"
+            fi
         fi
         notify_update_available "$uid"
     done
+
+    if (( delivered == 0 )); then
+        cron_mark "$now" "$manual" "fail|файл создан, но не отправлен в Telegram"
+        log "автобэкап создан, но не доставлен: $file ($size)"
+        cron_notify_fail "файл создан, но не отправлен в Telegram"
+        return 1
+    fi
 
     log "автобэкап: $file ($size)"
     return 0
@@ -2379,12 +2585,18 @@ cmd_backup() {
     db_running || die "контейнер БД $DB_CONTAINER не запущен"
 
     mkdir -p "$BACKUP_DIR"
-    local ts file
+    local ts file err_file
     ts="$(date +%Y-%m-%d_%H_%M_%S)"
     file="$BACKUP_DIR/rw_db_backup_${ts}.sql.gz"
+    err_file="$STATE_DIR/backup.err"
 
     print_message "INFO" "Создаю дамп…"
-    dump_to_file "$file" /dev/stderr || die "не удалось создать дамп"
+    if ! dump_to_file "$file" "$err_file"; then
+        [[ -s "$err_file" ]] && cat "$err_file" >&2
+        rm -f "$err_file"
+        die "не удалось создать дамп: ${DUMP_FAIL:-неизвестная ошибка}"
+    fi
+    rm -f "$err_file"
     apply_retention "$KEEP_FILES"
     print_message "SUCCESS" "Дамп: $file ($(human_size_fast "$file"))"
 
@@ -2460,7 +2672,7 @@ cmd_restore() {
     ts="$(date +%Y-%m-%d_%H_%M_%S)"
     safety="$SAFETY_DIR/pre_restore_${ts}.sql.gz"
     print_message "INFO" "Страховочный дамп…"
-    dump_to_file "$safety" /dev/stderr || { cleanup_vd; die "не удалось сделать страховочный дамп"; }
+    dump_to_file "$safety" /dev/stderr || { cleanup_vd; die "не удалось сделать страховочный дамп: ${DUMP_FAIL:-неизвестная ошибка}"; }
 
     print_message "INFO" "Восстанавливаю…"
     RESTORE_ROLLED_BACK=0
@@ -2503,6 +2715,7 @@ rw-back-bot.sh — Telegram-бот и движок бэкапов Remnawave
 
   rw-back-bot.sh                 слушать Telegram (служба)
   rw-back-bot.sh cron            автоматический бэкап + рассылка админам
+  rw-back-bot.sh cron --force    бэкап сейчас, расписание не сдвигается
   rw-back-bot.sh backup          ручной бэкап с отправкой в Telegram
   rw-back-bot.sh list            список архивов
   rw-back-bot.sh validate FILE   проверить дамп (без восстановления)
@@ -2518,7 +2731,7 @@ main() {
     local mode="${1:-serve}"
     case "$mode" in
         serve) serve ;;
-        cron) cmd_cron ;;
+        cron) shift; cmd_cron "$@" ;;
         backup) cmd_backup ;;
         list) cmd_list ;;
         validate) shift; cmd_validate "$@" ;;

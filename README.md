@@ -10,7 +10,7 @@
   <img src="https://skillicons.dev/icons?i=bash,docker,linux,ubuntu,postgres&theme=dark" alt="Bash · Docker · Linux · Ubuntu · PostgreSQL"/>
 </p>
 
-[![Version](https://img.shields.io/badge/version-2.2.8-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](VERSION)
+[![Version](https://img.shields.io/badge/version-2.2.9-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](VERSION)
 [![Remnawave](https://img.shields.io/badge/Remnawave-3.4.11-2563eb?style=for-the-badge&labelColor=0d1117)](https://github.com/remnawave/backend)
 [![Stars](https://img.shields.io/github/stars/CyberERROR/rw-back?style=for-the-badge&labelColor=0d1117&logo=github&label=stars&color=7c3aed)](https://github.com/CyberERROR/rw-back/stargazers)
 [![Telegram](https://img.shields.io/badge/Telegram-%D1%87%D0%B0%D1%82-9333ea?style=for-the-badge&labelColor=0d1117&logo=telegram&logoColor=white)](https://t.me/+YV_BO1cmGWw5OTdi)
@@ -95,6 +95,8 @@
 - ✅ отправка админам в Telegram с датой, размером и метриками сервера
 - ✅ файл уходит сразу, метрики дозаполняются после отправки
 - ✅ автобэкап каждые 3/6/12/24 ч или своё
+- ✅ статус: когда прошёл последний и когда будет следующий
+- ✅ сбой автобэкапа виден в чате — с причиной, а не тишиной
 - ✅ напоминание об обновлении с кнопкой «Обновить» прямо в чате
 - ✅ команда `/update` — проверка версии в любой момент
 - ✅ хранение на выбор: по числу файлов (2/5/10 или своё) **или** по сроку в днях
@@ -188,6 +190,7 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 |:--|:--|
 | `rw-back` | меню |
 | `rw-back backup` | бэкап + отправка админам, если Telegram настроен |
+| `rw-back cron --force` | бэкап сейчас, расписание не сдвигается |
 | `rw-back restore ФАЙЛ` | восстановить БД |
 | `rw-back validate ФАЙЛ` | проверить дамп |
 | `rw-back list` | список архивов |
