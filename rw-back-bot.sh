@@ -84,6 +84,18 @@ load_config() {
     fi
 }
 
+CONFIG_STAMP=""
+load_config_if_changed() {
+    local stamp=""
+    if [[ -f "$CONFIG_FILE" ]]; then
+        stamp=$(stat -c '%Y.%s' "$CONFIG_FILE" 2>/dev/null || true)
+    fi
+    if [[ "$stamp" != "$CONFIG_STAMP" ]]; then
+        CONFIG_STAMP="$stamp"
+        load_config
+    fi
+}
+
 save_config() {
     mkdir -p "$INSTALL_DIR" || return 1
     local tmp="$CONFIG_FILE.tmp.$$"
@@ -490,12 +502,23 @@ panel_version() {
     fi
 }
 
+human_size_fast() {
+    local b
+    b=$(bytes_of "$1")
+    awk -v b="${b:-0}" 'BEGIN{
+        if (b >= 1073741824) printf "%.1fG", b/1073741824
+        else if (b >= 1048576) printf "%.1fM", b/1048576
+        else if (b >= 1024) printf "%.0fK", b/1024
+        else printf "%dB", b
+    }'
+}
+
 cpu_usage_text() {
     local cores first second usage word
     cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
     [[ "$cores" =~ ^[0-9]+$ ]] || cores=1
     first=$(awk 'NR==1{print $2,$3,$4,$5,$6,$7,$8,$9; exit}' /proc/stat 2>/dev/null)
-    sleep 1
+    sleep 0.3
     second=$(awk 'NR==1{print $2,$3,$4,$5,$6,$7,$8,$9; exit}' /proc/stat 2>/dev/null)
     usage=$(awk -v a="$first" -v b="$second" 'BEGIN{
         split(a,x," "); split(b,y," ");
@@ -519,14 +542,30 @@ memory_usage_text() {
     free -b 2>/dev/null | awk '/^Mem:/{printf "%.1f ГБ / %.1f ГБ (%.0f%%)",$3/1073741824,$2/1073741824,100*$3/$2; found=1} END{if(!found)printf "—"}'
 }
 
-backup_caption() {
+backup_caption_fast() {
     local file="$1" created_at="${2:-$(date +'%Y-%m-%d %H:%M:%S')}"
     printf '%s' "💎 <b>DATABASE BACKUP</b> 💎
 #remna_bd_success
 ➖➖➖➖➖➖➖➖➖➖➖➖➖➖
 ✅ Резервная копия создана
 📆 Дата: ${created_at}
-🗂 Объем: $(human_size "$file")
+🗂 Объем: $(human_size_fast "$file")
+
+📊 <b>Информация:</b>
+⏳ собираю метрики…
+
+🏗 Команда: <code>rw-back</code>
+🛡 CyberERROR"
+}
+
+backup_caption_full() {
+    local file="$1" created_at="${2:-$(date +'%Y-%m-%d %H:%M:%S')}"
+    printf '%s' "💎 <b>DATABASE BACKUP</b> 💎
+#remna_bd_success
+➖➖➖➖➖➖➖➖➖➖➖➖➖➖
+✅ Резервная копия создана
+📆 Дата: ${created_at}
+🗂 Объем: $(human_size_fast "$file")
 
 📊 <b>Информация:</b>
 1️⃣ Платформа: Remnawave $(panel_version)
@@ -536,6 +575,32 @@ backup_caption() {
 
 🏗 Команда: <code>rw-back</code>
 🛡 CyberERROR"
+}
+
+tg_edit_caption() {
+    local chat_id="$1" message_id="$2" caption="$3"
+    tg_call editMessageCaption \
+        --data-urlencode "chat_id=$chat_id" \
+        --data-urlencode "message_id=$message_id" \
+        --data-urlencode "caption=$caption" \
+        -d "parse_mode=HTML" > /dev/null 2>&1 || true
+}
+
+send_backup_file() {
+    local chat_id="$1" file="$2" thread="${3:-}" created_at="${4:-}"
+    local fast full sent mid
+    fast="$(backup_caption_fast "$file" "$created_at")"
+    sent=$(tg_doc "$chat_id" "$file" "$fast" "$thread")
+    if ! tg_ok "$sent"; then
+        sent=$(tg_doc "$chat_id" "$file" "" "$thread")
+    fi
+    tg_ok "$sent" || return 1
+    mid=$(msg_id_of "$sent")
+    if [[ -n "$mid" ]]; then
+        full="$(backup_caption_full "$file" "$created_at")"
+        tg_edit_caption "$chat_id" "$mid" "$full"
+    fi
+    return 0
 }
 
 kb_update() {
@@ -1268,24 +1333,16 @@ $(escape_html "$reason")" "$(kb_remna)" "$thread" > /dev/null
 
     apply_retention "$KEEP_FILES"
 
-    local size_bytes size_h caption
+    local size_bytes size_h
     size_bytes=$(bytes_of "$file")
-    size_h=$(human_size "$file")
-    caption="$(backup_caption "$file")"
+    size_h=$(human_size_fast "$file")
 
     if (( size_bytes > TG_MAX_UPLOAD_MB * 1024 * 1024 )); then
         tg_send "$notify_to" "$(limits_instruction upload "$size_h" "$file")" "$(kb_remna)" "$thread" > /dev/null
-    else
-        local sent
-        sent=$(tg_doc "$notify_to" "$file" "$caption" "$thread")
-        if ! tg_ok "$sent"; then
-            sent=$(tg_doc "$notify_to" "$file" "" "$thread")
-        fi
-        if ! tg_ok "$sent"; then
-            tg_send "$notify_to" "⚠️ Дамп создан, но Telegram не принял файл.
+    elif ! send_backup_file "$notify_to" "$file" "$thread"; then
+        tg_send "$notify_to" "⚠️ Дамп создан, но Telegram не принял файл.
 📂 На сервере: <code>$(escape_html "$file")</code>
 Забрать: <code>scp root@IP:$file .</code>${note}" "$(kb_remna)" "$thread" > /dev/null
-        fi
     fi
 
     if [[ -n "$status_id" ]]; then
@@ -1642,19 +1699,15 @@ flow_send_archive() {
     local f="${files[$((index - 1))]}" size
     size=$(bytes_of "$f")
     if (( size > TG_MAX_UPLOAD_MB * 1024 * 1024 )); then
-        tg_send "$chat_id" "$(limits_instruction upload "$(human_size "$f")" "$f")" "$(kb_remna)" "$thread" > /dev/null
+        tg_send "$chat_id" "$(limits_instruction upload "$(human_size_fast "$f")" "$f")" "$(kb_remna)" "$thread" > /dev/null
         return 0
     fi
 
-    local sent
-    sent=$(tg_doc "$chat_id" "$f" "$(backup_caption "$f" "$(date -r "$f" +'%Y-%m-%d %H:%M:%S')")" "$thread")
-    if ! tg_ok "$sent"; then
-        sent=$(tg_doc "$chat_id" "$f" "" "$thread")
-    fi
-    if ! tg_ok "$sent"; then
-        tg_send "$chat_id" "⚠️ Не удалось отправить архив: $(escape_html "$(tg_error_of "$sent")")
+    if ! send_backup_file "$chat_id" "$f" "$thread" "$(date -r "$f" +'%Y-%m-%d %H:%M:%S')"; then
+        tg_send "$chat_id" "⚠️ Не удалось отправить архив.
 📂 <code>$(escape_html "$f")</code>" "$(kb_remna)" "$thread" > /dev/null
     fi
+    notify_update_available "$chat_id" "$thread"
     return 0
 }
 
@@ -2171,7 +2224,7 @@ serve() {
     [[ "$offset" =~ ^[0-9]+$ ]] || offset=0
 
     while true; do
-        load_config
+        load_config_if_changed
         if [[ -z "${BOT_TOKEN:-}" ]]; then
             print_message "WARN" "BOT_TOKEN удалён из конфигурации. Останавливаю службу без цикла ошибок."
             return 0
@@ -2223,7 +2276,7 @@ serve() {
                     if command -v flock > /dev/null 2>&1; then
                         flock -w 30 9 || { log "не дождался ops.lock — апдейт вернётся в очередь"; exit 1; }
                     fi
-                    load_config
+                    load_config_if_changed
                     [[ -n "${BOT_TOKEN:-}" ]] || exit 1
                     handle_update "$upd"
                 ); then
@@ -2276,9 +2329,8 @@ cmd_cron() {
         log "не удалось сохранить время автобэкапа — при следующем запуске возможна повторная копия"
     fi
 
-    local size caption
-    size=$(human_size "$file")
-    caption="$(backup_caption "$file")"
+    local size
+    size=$(human_size_fast "$file")
 
     local ids uid
     local -a arr=()
@@ -2288,12 +2340,15 @@ cmd_cron() {
         return 0
     fi
 
+    local big=0
+    (( $(bytes_of "$file") > TG_MAX_UPLOAD_MB * 1024 * 1024 )) && big=1
+
     IFS=',' read -ra arr <<< "$ids"
     for uid in "${arr[@]}"; do
-        if (( $(bytes_of "$file") > TG_MAX_UPLOAD_MB * 1024 * 1024 )); then
+        if (( big == 1 )); then
             tg_send "$uid" "$(limits_instruction upload "$size" "$file")" > /dev/null 2>&1 || true
         else
-            tg_doc "$uid" "$file" "$caption" > /dev/null 2>&1 || true
+            send_backup_file "$uid" "$file" "" > /dev/null 2>&1 || true
         fi
         notify_update_available "$uid"
     done
@@ -2315,21 +2370,22 @@ cmd_backup() {
     print_message "INFO" "Создаю дамп…"
     dump_to_file "$file" /dev/stderr || die "не удалось создать дамп"
     apply_retention "$KEEP_FILES"
-    print_message "SUCCESS" "Дамп: $file ($(human_size "$file"))"
+    print_message "SUCCESS" "Дамп: $file ($(human_size_fast "$file"))"
 
     if [[ -n "${BOT_TOKEN:-}" ]]; then
-        local ids uid size caption
+        local ids uid size
         local -a arr=()
         ids="$(normalize_ids "$BOT_ADMIN_IDS")"
         if [[ -n "$ids" ]]; then
-            size=$(human_size "$file")
-            caption="$(backup_caption "$file")"
+            size=$(human_size_fast "$file")
+            local big=0
+            (( $(bytes_of "$file") > TG_MAX_UPLOAD_MB * 1024 * 1024 )) && big=1
             IFS=',' read -ra arr <<< "$ids"
             for uid in "${arr[@]}"; do
-                if (( $(bytes_of "$file") > TG_MAX_UPLOAD_MB * 1024 * 1024 )); then
+                if (( big == 1 )); then
                     tg_send "$uid" "$(limits_instruction upload "$size" "$file")" > /dev/null 2>&1 || true
                 else
-                    tg_doc "$uid" "$file" "$caption" > /dev/null 2>&1 || true
+                    send_backup_file "$uid" "$file" "" > /dev/null 2>&1 || true
                 fi
                 notify_update_available "$uid"
             done
