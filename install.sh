@@ -473,7 +473,7 @@ load_config() {
     BOT_TOKEN=""; CHAT_ID=""; BOT_ADMIN_IDS=""
     DB_USER="postgres"; DB_NAME="postgres"; DB_CONTAINER="remnawave-db"
     PANEL_CONTAINER="remnawave"; CACHE_CONTAINER="remnawave-redis"
-    CRON_HOURS="0"; KEEP_FILES="5"; PANEL_DIR="/opt/remnawave"
+    CRON_HOURS="0"; KEEP_FILES="5"; KEEP_DAYS="0"; PANEL_DIR="/opt/remnawave"
 
     if [[ -f "$CONFIG_FILE" ]]; then
         source "$CONFIG_FILE"
@@ -487,11 +487,14 @@ load_config() {
     PANEL_DIR=${PANEL_DIR:-/opt/remnawave}
     CRON_HOURS=${CRON_HOURS:-0}
     KEEP_FILES=${KEEP_FILES:-5}
+    KEEP_DAYS=${KEEP_DAYS:-0}
     BOT_ADMIN_IDS=${BOT_ADMIN_IDS:-}
     [[ "$CRON_HOURS" =~ ^[0-9]+$ ]] || CRON_HOURS=0
     [[ "$KEEP_FILES" =~ ^[0-9]+$ ]] || KEEP_FILES=5
+    [[ "$KEEP_DAYS" =~ ^[0-9]+$ ]] || KEEP_DAYS=0
     CRON_HOURS=$((10#$CRON_HOURS))
     KEEP_FILES=$((10#$KEEP_FILES))
+    KEEP_DAYS=$((10#$KEEP_DAYS))
     ui_colors_init
 }
 
@@ -510,6 +513,7 @@ save_config() {
         printf 'CACHE_CONTAINER=%q\n' "$CACHE_CONTAINER"
         printf 'CRON_HOURS=%q\n' "$CRON_HOURS"
         printf 'KEEP_FILES=%q\n' "$KEEP_FILES"
+        printf 'KEEP_DAYS=%q\n' "$KEEP_DAYS"
         printf 'PANEL_DIR=%q\n' "$PANEL_DIR"
     } > "$tmp" || return 1
     chmod 600 "$tmp" 2>/dev/null
@@ -938,6 +942,15 @@ wizard() {
             break
         fi
         print_message "ERROR" "Введите число от 1 до 200"
+    done
+    while true; do
+        ui_input input "Сколько дней хранить (0 — без ограничения)" "$KEEP_DAYS" || { print_message "ERROR" "Ввод завершён"; return 1; }
+        input="${input:-$KEEP_DAYS}"
+        if [[ "$input" =~ ^[0-9]+$ ]] && (( input <= 365 )); then
+            KEEP_DAYS="$input"
+            break
+        fi
+        print_message "ERROR" "Введите число от 0 до 365"
     done
 
     save_config || die "Не удалось сохранить конфигурацию"
@@ -1459,6 +1472,7 @@ menu_settings() {
         menu_add 3 "Каталог панели"
         menu_add 4 "Админы бота"
         menu_add 5 "Сколько архивов хранить"
+        menu_add 6 "Сколько дней хранить"
         menu_gap
         menu_add 0 "Назад"
         local choice input
@@ -1507,6 +1521,16 @@ menu_settings() {
                     print_message "ERROR" "Число от 1 до 200"
                 fi
                 ;;
+            6)
+                ui_input input "Сколько дней хранить (0 — без ограничения)" "$KEEP_DAYS" || return 1
+                input="${input:-$KEEP_DAYS}"
+                if [[ "$input" =~ ^[0-9]+$ ]] && (( input <= 365 )); then
+                    KEEP_DAYS="$input"
+                    save_config && print_message "SUCCESS" "Срок хранения сохранён" || print_message "ERROR" "Не удалось сохранить конфигурацию"
+                else
+                    print_message "ERROR" "Число от 0 до 365"
+                fi
+                ;;
             0) return ;;
         esac
         echo ""
@@ -1515,10 +1539,12 @@ menu_settings() {
 }
 
 show_main_status() {
-    local version cron_txt tg_state archives remote
+    local version cron_txt tg_state archives remote days_txt
     local -a rows
     version="$(local_version)"
     archives=$(find "$BACKUP_DIR" -maxdepth 1 -name 'rw_db_backup_*.sql.gz' 2>/dev/null | wc -l | tr -d ' ')
+    days_txt="${KEEP_DAYS} дн."
+    (( KEEP_DAYS == 0 )) && days_txt="без ограничения"
     cron_txt="${YELLOW}выключен${RESET}"
     (( CRON_HOURS > 0 )) && cron_txt="${BOLD}каждые ${CRON_HOURS} ч${RESET}"
     if [[ -z "$BOT_TOKEN" ]]; then
@@ -1532,7 +1558,7 @@ show_main_status() {
     fi
     rows=(
         "База данных" "${BOLD}${DB_CONTAINER}${RESET}"
-        "Архивы" "${BOLD}${archives}${RESET}${LIGHT_GRAY} · хранить ${KEEP_FILES}${RESET}"
+        "Архивы" "${BOLD}${archives}${RESET}${LIGHT_GRAY} · ${KEEP_FILES} шт. · ${days_txt}${RESET}"
         "Автобэкап" "$cron_txt"
         "Telegram" "$tg_state"
     )

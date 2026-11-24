@@ -54,7 +54,7 @@ load_config() {
     BOT_TOKEN=""; CHAT_ID=""; BOT_ADMIN_IDS=""
     DB_USER="postgres"; DB_NAME="postgres"; DB_CONTAINER="remnawave-db"
     PANEL_CONTAINER="remnawave"; CACHE_CONTAINER="remnawave-redis"
-    CRON_HOURS="0"; KEEP_FILES="5"; PANEL_DIR="/opt/remnawave"
+    CRON_HOURS="0"; KEEP_FILES="5"; KEEP_DAYS="0"; PANEL_DIR="/opt/remnawave"
 
     if [[ -f "$CONFIG_FILE" ]]; then
         source "$CONFIG_FILE"
@@ -68,12 +68,15 @@ load_config() {
     PANEL_DIR=${PANEL_DIR:-/opt/remnawave}
     CRON_HOURS=${CRON_HOURS:-0}
     KEEP_FILES=${KEEP_FILES:-5}
+    KEEP_DAYS=${KEEP_DAYS:-0}
     BOT_ADMIN_IDS=${BOT_ADMIN_IDS:-}
 
     [[ "$CRON_HOURS" =~ ^[0-9]+$ ]] || CRON_HOURS=0
     [[ "$KEEP_FILES" =~ ^[0-9]+$ ]] || KEEP_FILES=5
+    [[ "$KEEP_DAYS" =~ ^[0-9]+$ ]] || KEEP_DAYS=0
     CRON_HOURS=$((10#$CRON_HOURS))
     KEEP_FILES=$((10#$KEEP_FILES))
+    KEEP_DAYS=$((10#$KEEP_DAYS))
 }
 
 save_config() {
@@ -91,6 +94,7 @@ save_config() {
         printf 'CACHE_CONTAINER=%q\n' "$CACHE_CONTAINER"
         printf 'CRON_HOURS=%q\n' "$CRON_HOURS"
         printf 'KEEP_FILES=%q\n' "$KEEP_FILES"
+        printf 'KEEP_DAYS=%q\n' "$KEEP_DAYS"
         printf 'PANEL_DIR=%q\n' "$PANEL_DIR"
     } > "$tmp" || return 1
     chmod 600 "$tmp" 2>/dev/null
@@ -206,7 +210,7 @@ kb_remna() {
 }
 
 kb_settings() {
-    printf '%s' '{"inline_keyboard":[[{"text":"👥 Админы","callback_data":"s:admins"},{"text":"🕒 Расписание","callback_data":"s:schedule"}],[{"text":"📦 Хранить файлов","callback_data":"s:keep"}],[{"text":"⬅️ Назад","callback_data":"m:main"}]]}'
+    printf '%s' '{"inline_keyboard":[[{"text":"👥 Админы","callback_data":"s:admins"},{"text":"🕒 Расписание","callback_data":"s:schedule"}],[{"text":"📦 Хранить файлов","callback_data":"s:keep"},{"text":"🗓 Хранить дней","callback_data":"s:days"}],[{"text":"⬅️ Назад","callback_data":"m:main"}]]}'
 }
 
 kb_back() {
@@ -905,9 +909,14 @@ restore_sql_file() {
 }
 
 apply_retention() {
-    local keep="${1:-$KEEP_FILES}"
+    local keep="${1:-$KEEP_FILES}" days="${KEEP_DAYS:-0}"
     [[ "$keep" =~ ^[0-9]+$ ]] || keep=5
+    [[ "$days" =~ ^[0-9]+$ ]] || days=0
     (( keep < 1 )) && keep=1
+
+    if (( days > 0 )); then
+        find "$BACKUP_DIR" -maxdepth 1 -type f -name 'rw_db_backup_*.sql.gz' -mtime "+$((days - 1))" -delete 2>/dev/null || true
+    fi
 
     local files=()
     mapfile -t files < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'rw_db_backup_*.sql.gz' -printf '%T@ %p\n' 2>/dev/null | sort -nr | cut -d' ' -f2-)
@@ -966,8 +975,9 @@ notify_chat_text() {
 start_text() {
     local upd
     upd="$(update_line)"
-    local cron_txt="выключено"
+    local cron_txt="выключено" days_txt="без ограничения"
     (( CRON_HOURS > 0 )) && cron_txt="каждые ${CRON_HOURS} ч"
+    (( KEEP_DAYS > 0 )) && days_txt="${KEEP_DAYS} дн."
     local db_state="нет"
     db_running && db_state="запущена"
 
@@ -975,7 +985,8 @@ start_text() {
 ➖➖➖➖➖
 💾 Бэкап базы Remnawave
 🗓 Расписание: <b>${cron_txt}</b>
-📦 Хранить: <b>${KEEP_FILES}</b> шт.
+📦 Хранить: <b>${KEEP_FILES} шт.</b>
+🗓 Дней: <b>${days_txt}</b>
 🔌 БД: <b>${db_state}</b>${upd}"
 }
 
@@ -993,13 +1004,15 @@ remna_text() {
 }
 
 settings_text() {
-    local cron_txt="выключено"
+    local cron_txt="выключено" days_txt="выключено"
     (( CRON_HOURS > 0 )) && cron_txt="каждые ${CRON_HOURS} ч"
+    (( KEEP_DAYS > 0 )) && days_txt="${KEEP_DAYS} дн."
     printf '%s' "⚙️ <b>Настройки</b>
 ➖➖➖➖➖
 👥 Админов: <b>$(admin_count)</b>
 🕒 Расписание: <b>${cron_txt}</b>
-📦 Хранить файлов: <b>${KEEP_FILES}</b>"
+📦 Хранить файлов: <b>${KEEP_FILES} шт.</b>
+🗓 Хранить дней: <b>${days_txt}</b>"
 }
 
 admins_text() {
@@ -1023,6 +1036,10 @@ kb_keep() {
     printf '%s' '{"inline_keyboard":[[{"text":"2","callback_data":"k:2"},{"text":"5","callback_data":"k:5"},{"text":"10","callback_data":"k:10"}],[{"text":"✏️ Своё значение","callback_data":"k:custom"}],[{"text":"⬅️ Назад","callback_data":"s:menu"}]]}'
 }
 
+kb_keep_days() {
+    printf '%s' '{"inline_keyboard":[[{"text":"7 дней","callback_data":"d:7"},{"text":"14 дней","callback_data":"d:14"},{"text":"30 дней","callback_data":"d:30"}],[{"text":"✏️ Своё значение","callback_data":"d:custom"}],[{"text":"♾️ Без ограничения","callback_data":"d:0"}],[{"text":"⬅️ Назад","callback_data":"s:menu"}]]}'
+}
+
 schedule_text() {
     local cron_txt="выключено"
     (( CRON_HOURS > 0 )) && cron_txt="каждые ${CRON_HOURS} ч"
@@ -1034,11 +1051,21 @@ schedule_text() {
 }
 
 keep_text() {
-    printf '%s' "📦 <b>Сколько архивов хранить</b>
+    printf '%s' "📦 <b>Хранить файлов</b>
 ➖➖➖➖➖
-Сейчас: <b>${KEEP_FILES}</b> шт.
+Сейчас: <b>${KEEP_FILES} шт.</b>
 
-Старые удаляются автоматически после каждого бэкапа." 
+Лишние архивы удаляются после каждого бэкапа."
+}
+
+keep_days_text() {
+    local days_txt="без ограничения"
+    (( KEEP_DAYS > 0 )) && days_txt="${KEEP_DAYS} дн."
+    printf '%s' "🗓 <b>Хранить дней</b>
+➖➖➖➖➖
+Сейчас: <b>${days_txt}</b>
+
+Архивы старше срока удаляются автоматически."
 }
 
 limits_instruction() {
@@ -1657,6 +1684,13 @@ handle_update() {
                     apply_keep "$chat_id" "$thread" "$keep"
                     return 0
                     ;;
+                set_keep_days)
+                    local days
+                    days=$(printf '%s' "$text" | tr -d '[:space:]')
+                    await_clear "$uid"
+                    apply_keep_days "$chat_id" "$thread" "$days"
+                    return 0
+                    ;;
             esac
         fi
 
@@ -1717,6 +1751,7 @@ handle_update() {
         s:admins) tg_edit "$chat_id" "$msg_id" "$(admins_text)" "$(kb_admins)" ;;
         s:schedule) tg_edit "$chat_id" "$msg_id" "$(schedule_text)" "$(kb_schedule)" ;;
         s:keep) tg_edit "$chat_id" "$msg_id" "$(keep_text)" "$(kb_keep)" ;;
+        s:days) tg_edit "$chat_id" "$msg_id" "$(keep_days_text)" "$(kb_keep_days)" ;;
 
         a:add)
             await_set "$uid" "add_admin" ""
@@ -1787,6 +1822,15 @@ $(admins_text)" "$(kb_admins)"
             ;;
         k:*)
             apply_keep "$chat_id" "$thread" "${cb_data#k:}" "$msg_id"
+            ;;
+        d:custom)
+            await_set "$uid" "set_keep_days" ""
+            tg_edit "$chat_id" "$msg_id" "🗓 <b>Свой срок хранения</b>
+➖➖➖➖➖
+Сколько дней хранить архивы (1–365)?" "$(kb_keep_days)"
+            ;;
+        d:*)
+            apply_keep_days "$chat_id" "$thread" "${cb_data#d:}" "$msg_id"
             ;;
 
         i:yes) flow_import_run "$chat_id" "$thread" "$uid" ;;
@@ -1873,6 +1917,42 @@ apply_keep() {
         tg_edit "$chat_id" "$edit_id" "$text" "$(kb_keep)"
     else
         tg_send "$chat_id" "$text" "$(kb_keep)" "$thread" > /dev/null
+    fi
+    return 0
+}
+
+apply_keep_days() {
+    local chat_id="$1" thread="$2" value="$3" edit_id="${4:-}"
+    [[ "$value" =~ ^[0-9]{1,3}$ ]] || {
+        tg_send "$chat_id" "⚠️ Нужно число дней." "$(kb_keep_days)" "$thread" > /dev/null
+        return 0
+    }
+    value=$((10#$value))
+    if (( value > 365 )); then
+        tg_send "$chat_id" "⚠️ Допустимо от 1 до 365 дней." "$(kb_keep_days)" "$thread" > /dev/null
+        return 0
+    fi
+
+    local old_days="$KEEP_DAYS"
+    KEEP_DAYS="$value"
+    if ! save_config; then
+        KEEP_DAYS="$old_days"
+        tg_send "$chat_id" "❌ Не удалось сохранить срок хранения." "$(kb_keep_days)" "$thread" > /dev/null
+        return 0
+    fi
+    apply_retention "$KEEP_FILES"
+
+    local text="♾️ <b>Ограничение по дням выключено</b>"
+    if (( value > 0 )); then
+        text="✅ <b>Срок хранения обновлён</b>
+➖➖➖➖➖
+🗓 Удаляю архивы старше <b>${value} дн.</b>"
+    fi
+
+    if [[ -n "$edit_id" ]]; then
+        tg_edit "$chat_id" "$edit_id" "$text" "$(kb_keep_days)"
+    else
+        tg_send "$chat_id" "$text" "$(kb_keep_days)" "$thread" > /dev/null
     fi
     return 0
 }
