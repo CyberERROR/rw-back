@@ -946,9 +946,9 @@ version_compare() {
 }
 
 remote_version() {
-    local cache="$STATE_DIR/update_cache" ts ver
+    local force="${1:-}" cache="$STATE_DIR/update_cache" ts ver
     mkdir -p "$STATE_DIR" 2>/dev/null
-    if [[ -f "$cache" ]]; then
+    if [[ "$force" != "force" && -f "$cache" ]]; then
         ts=$(cut -d'|' -f1 "$cache" 2>/dev/null)
         ver=$(cut -d'|' -f2 "$cache" 2>/dev/null)
         if [[ "$ts" =~ ^[0-9]+$ ]]; then
@@ -1127,12 +1127,13 @@ do_update() {
 
     local current remote
     current="$(local_version)"
-    remote="$(remote_version)"
+    remote="$(remote_version force)"
 
     if [[ -z "$remote" ]]; then
         print_message "ERROR" "Не удалось узнать версию с GitHub (нет сети?)"
         return 1
     fi
+    print_message "INFO" "Текущая версия: ${current} · доступна: ${remote}"
     if ! version_compare "$current" "$remote"; then
         print_message "SUCCESS" "Уже последняя версия: ${current}"
         return 0
