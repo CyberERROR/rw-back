@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -o pipefail
 
-if [[ -t 1 ]]; then
+if [[ -t 0 ]]; then
     RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; CYAN=$'\e[36m'
-    GRAY=$'\e[90m'; RESET=$'\e[0m'
+    GRAY=$'\e[37m'; LIGHT_GRAY=$'\e[90m'; RESET=$'\e[0m'
 else
-    RED=""; GREEN=""; YELLOW=""; CYAN=""; GRAY=""; RESET=""
+    RED=""; GREEN=""; YELLOW=""; CYAN=""; GRAY=""; LIGHT_GRAY=""; RESET=""
 fi
 
 SELF_PATH="$(realpath "$0" 2>/dev/null || echo "$0")"
@@ -26,6 +26,7 @@ TG_MAX_UPLOAD_MB=50
 DUMP_MAX_UNPACK_MB=600
 DUMP_MAX_SQL_BYTES=$((DUMP_MAX_UNPACK_MB * 1024 * 1024))
 UPDATE_CACHE_TTL=21600
+UPDATE_FAIL_CACHE_TTL=60
 LOCAL_VERSION="dev"
 
 log() {
@@ -39,7 +40,7 @@ print_message() {
         WARN) color="$YELLOW" ;;
         ERROR) color="$RED" ;;
         ACTION) color="$CYAN" ;;
-        INFO) color="$GRAY" ;;
+        INFO) color="$LIGHT_GRAY" ;;
     esac
     printf '%s[%s]%s %s\n' "$color" "$type" "$RESET" "$message"
 }
@@ -71,6 +72,8 @@ load_config() {
 
     [[ "$CRON_HOURS" =~ ^[0-9]+$ ]] || CRON_HOURS=0
     [[ "$KEEP_FILES" =~ ^[0-9]+$ ]] || KEEP_FILES=5
+    CRON_HOURS=$((10#$CRON_HOURS))
+    KEEP_FILES=$((10#$KEEP_FILES))
 }
 
 save_config() {
@@ -115,6 +118,7 @@ require_deps() {
     for p in "${need[@]}"; do
         command -v "$p" > /dev/null 2>&1 || missing+=("$p")
     done
+    command -v flock > /dev/null 2>&1 || missing+=("util-linux")
     if [[ ${#missing[@]} -gt 0 ]]; then
         log "не хватает пакетов: ${missing[*]}"
         if command -v apt-get > /dev/null 2>&1; then
@@ -126,6 +130,7 @@ require_deps() {
     for p in "${need[@]}"; do
         command -v "$p" > /dev/null 2>&1 || fail=1
     done
+    command -v flock > /dev/null 2>&1 || fail=1
     return $fail
 }
 
@@ -280,12 +285,16 @@ setup_attempts_add() {
 }
 
 bind_main_admin() {
-    local uid="$1"
+    local uid="$1" old_ids="$BOT_ADMIN_IDS" old_chat="$CHAT_ID"
     BOT_ADMIN_IDS="$uid"
     if [[ -z "$CHAT_ID" || ! "$CHAT_ID" =~ ^[0-9]+$ ]]; then
         CHAT_ID="$uid"
     fi
-    save_config
+    if ! save_config; then
+        BOT_ADMIN_IDS="$old_ids"
+        CHAT_ID="$old_chat"
+        return 1
+    fi
     setup_code_clear
 }
 
@@ -314,8 +323,18 @@ handle_binding() {
     local input
     input="$(printf '%s' "$text" | tr -dc '0-9')"
 
-    if [[ -n "$input" && "$input" == "$code" ]]; then
-        bind_main_admin "$uid"
+    if [[ -z "$input" ]]; then
+        tg_send "$chat_id" "🔑 <b>Введите код из установщика</b>
+➖➖➖➖➖
+6 цифр · осталось попыток: <b>${SETUP_MAX_ATTEMPTS}</b>" "" "$thread" > /dev/null
+        return 0
+    fi
+
+    if [[ "$input" == "$code" ]]; then
+        if ! bind_main_admin "$uid"; then
+            tg_send "$chat_id" "❌ Не удалось сохранить админа. Проверьте права на <code>${CONFIG_FILE}</code> и повторите код." "" "$thread" > /dev/null
+            return 0
+        fi
         tg_send "$chat_id" "✅ <b>Вы главный админ</b>
 ➖➖➖➖➖
 ID: <code>${uid}</code>
@@ -348,6 +367,8 @@ $(start_text)" "$KB_MAIN" "$thread" > /dev/null
 version_compare() {
     local a="${1#v}" b="${2#v}"
     [[ "$a" == "$b" ]] && return 1
+    [[ "$b" =~ ^[0-9]+([.][0-9]+)*$ ]] || return 1
+    [[ "$a" =~ ^[0-9]+([.][0-9]+)*$ ]] || return 0
     local first
     first=$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n 1)
     [[ "$first" == "$a" ]]
@@ -360,9 +381,14 @@ update_check() {
         local ts ver
         ts=$(cut -d'|' -f1 "$cache" 2>/dev/null)
         ver=$(cut -d'|' -f2 "$cache" 2>/dev/null)
-        if [[ "$ts" =~ ^[0-9]+$ ]] && (( $(date +%s) - ts < UPDATE_CACHE_TTL )); then
-            printf '%s' "$ver"
-            return 0
+        if [[ "$ts" =~ ^[0-9]+$ ]]; then
+            if [[ -n "$ver" ]] && (( $(date +%s) - ts < UPDATE_CACHE_TTL )); then
+                printf '%s' "$ver"
+                return 0
+            fi
+            if [[ -z "$ver" ]] && (( $(date +%s) - ts < UPDATE_FAIL_CACHE_TTL )); then
+                return 0
+            fi
         fi
     fi
 
@@ -407,12 +433,13 @@ panel_exists() {
 
 panel_stop() {
     panel_running || return 0
-    docker stop "$PANEL_CONTAINER" > /dev/null 2>&1 || true
+    docker stop "$PANEL_CONTAINER" > /dev/null 2>&1
 }
 
 panel_start() {
     panel_exists || return 0
-    docker start "$PANEL_CONTAINER" > /dev/null 2>&1 || true
+    panel_running && return 0
+    docker start "$PANEL_CONTAINER" > /dev/null 2>&1
 }
 
 cache_reset() {
@@ -579,6 +606,11 @@ vd_extract_sql() {
                 vd_fail "архив распаковывается в слишком большой файл (защита от «бомбы»)"
                 return 1
             fi
+            if ! gzip -t "$file" > /dev/null 2>&1; then
+                rm -f "$out"
+                vd_fail "gzip-архив повреждён или неполный"
+                return 1
+            fi
             (( size > 0 )) || { rm -f "$out"; vd_fail "gzip-архив пустой или повреждён"; return 1; }
             VD_SQL_RESULT="$out"
             ;;
@@ -630,6 +662,11 @@ vd_extract_sql() {
                 vd_fail "содержимое zip больше допустимого (защита от «бомбы»)"
                 return 1
             fi
+            if ! unzip -t "$file" > /dev/null 2>&1; then
+                rm -f "$out"
+                vd_fail "zip-архив повреждён или неполный"
+                return 1
+            fi
             (( size > 0 )) || { rm -f "$out"; vd_fail "внутри zip пустой файл"; return 1; }
 
             if [[ "$ext" == "gz" ]]; then
@@ -637,13 +674,18 @@ vd_extract_sql() {
                 if ! ( set -o pipefail; gzip -dc "$out" 2>/dev/null | head -c $((DUMP_MAX_SQL_BYTES + 1)) > "$inner" ); then
                     true
                 fi
-                rm -f "$out"
                 size=$(stat -c %s "$inner" 2>/dev/null || echo 0)
                 if (( size > DUMP_MAX_SQL_BYTES )); then
-                    rm -f "$inner"
+                    rm -f "$inner" "$out"
                     vd_fail "вложенный gzip распаковывается в слишком большой файл"
                     return 1
                 fi
+                if ! gzip -t "$out" > /dev/null 2>&1; then
+                    rm -f "$inner" "$out"
+                    vd_fail "вложенный gzip повреждён или неполный"
+                    return 1
+                fi
+                rm -f "$out"
                 (( size > 0 )) || { rm -f "$inner"; vd_fail "вложенный gzip пустой"; return 1; }
                 VD_SQL_RESULT="$inner"
             else
@@ -680,6 +722,7 @@ validate_dump() {
 
     local sql
     if ! vd_extract_sql "$file" "$work"; then
+        cleanup_vd
         return 1
     fi
     sql="$VD_SQL_RESULT"
@@ -728,36 +771,60 @@ cleanup_vd() {
 }
 
 restore_sql_file() {
-    local sql="$1" target_db="${2:-}" safety="${3:-}" log_file
-    log_file="$STATE_DIR/restore_$(date +%s).log"
+    local sql="$1" target_db="${2:-}" safety="${3:-}" log_file rollback_log
+    log_file="$STATE_DIR/restore_$(date +%s)_$$.log"
+    rollback_log="$STATE_DIR/rollback_$(date +%s)_$$.log"
+    RESTORE_ROLLBACK_LOG=""
 
     [[ -n "$target_db" ]] || target_db="$DB_NAME"
     if head -n 400 "$sql" 2>/dev/null | grep -q -i "CREATE DATABASE"; then
         target_db="postgres"
     fi
 
-    panel_stop
+    if ! panel_stop; then
+        log "не удалось остановить панель — восстановление не начато"
+        RESTORE_ROLLED_BACK=0
+        RESTORE_ERRORS=0
+        RESTORE_LOG="$log_file"
+        return 1
+    fi
     local rc=0
-    docker exec -i "$DB_CONTAINER" psql -q -v ON_ERROR_STOP=0 -U "$DB_USER" -d "$target_db" \
+    docker exec -i "$DB_CONTAINER" psql -q -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$target_db" \
         > /dev/null 2> "$log_file" < "$sql" || rc=$?
     cache_reset
-    panel_start
+    panel_start || log "не удалось запустить панель после восстановления"
 
     local errors
-    errors=$(grep -c -E '^\s*(ERROR|FATAL):' "$log_file" 2>/dev/null | head -n 1 || true)
+    errors=$(grep -c -E '(^|:)[[:space:]]*(ERROR|FATAL):' "$log_file" 2>/dev/null | head -n 1 || true)
     [[ "$errors" =~ ^[0-9]+$ ]] || errors=0
 
-    if (( rc != 0 )) || ! wait_panel_healthy 180; then
+    if (( rc != 0 || errors > 0 )) || ! wait_panel_healthy 180; then
         log "восстановление не прошло (psql=$rc, ошибок=$errors)"
+        RESTORE_ROLLED_BACK=0
         if [[ -n "$safety" && -f "$safety" ]]; then
             log "откат к страховочному дампу"
-            panel_stop
-            docker exec -i "$DB_CONTAINER" psql -q -v ON_ERROR_STOP=0 -U "$DB_USER" -d "$target_db" \
-                > /dev/null 2>> "$log_file" < "$safety"
+            local rollback_rc=0 rollback_errors=0
+            panel_stop || rollback_rc=1
+            if (( rollback_rc == 0 )); then
+                if [[ "$safety" == *.gz ]]; then
+                    ( set -o pipefail; gzip -dc "$safety" 2>> "$rollback_log" | docker exec -i "$DB_CONTAINER" psql -q -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$target_db" \
+                        > /dev/null 2>> "$rollback_log" ) || rollback_rc=$?
+                else
+                    docker exec -i "$DB_CONTAINER" psql -q -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$target_db" \
+                        > /dev/null 2>> "$rollback_log" < "$safety" || rollback_rc=$?
+                fi
+            fi
+            rollback_errors=$(grep -c -E '(^|:)[[:space:]]*(ERROR|FATAL):' "$rollback_log" 2>/dev/null | head -n 1 || true)
+            [[ "$rollback_errors" =~ ^[0-9]+$ ]] || rollback_errors=0
+            (( rollback_errors == 0 )) || rollback_rc=1
             cache_reset
-            panel_start
-            wait_panel_healthy 180
-            RESTORE_ROLLED_BACK=1
+            panel_start || rollback_rc=1
+            RESTORE_ROLLBACK_LOG="$rollback_log"
+            if (( rollback_rc == 0 )) && wait_panel_healthy 180; then
+                RESTORE_ROLLED_BACK=1
+            else
+                log "откат завершился ошибкой (код=$rollback_rc, SQL-ошибок=$rollback_errors): $rollback_log"
+            fi
         fi
         RESTORE_ERRORS="$errors"
         RESTORE_LOG="$log_file"
@@ -987,6 +1054,10 @@ flow_export() {
             tg_edit "$notify_to" "$status_id" "❌ <b>Дамп не создан</b>
 ➖➖➖➖➖
 $(escape_html "$reason")" "$(kb_remna)"
+        else
+            tg_send "$notify_to" "❌ <b>Дамп не создан</b>
+➖➖➖➖➖
+$(escape_html "$reason")" "$(kb_remna)" "$thread" > /dev/null
         fi
         return 0
     fi
@@ -1032,16 +1103,18 @@ $(escape_html "$reason")" "$(kb_remna)"
 }
 
 pending_file_path() {
-    local p="$STATE_DIR/pending_import"
+    local p="$STATE_DIR/pending_import_$1"
     [[ -f "$p" ]] && head -n 1 "$p" 2>/dev/null
 }
 
 pending_clear() {
-    local p="$STATE_DIR/pending_import"
+    local uid="$1" preserve="${2:-}" p="$STATE_DIR/pending_import_$1"
     if [[ -f "$p" ]]; then
         local f
         f=$(head -n 1 "$p" 2>/dev/null)
-        [[ -n "$f" && -f "$f" ]] && rm -f "$f"
+        if [[ "$preserve" != "keep" && -n "$f" && -f "$f" ]]; then
+            rm -f "$f"
+        fi
         rm -f "$p"
     fi
     return 0
@@ -1109,11 +1182,18 @@ handle_document() {
         return 0
     fi
 
-    local ts safe_name local_file
+    local ts local_file suffix
+    case "$name_lower" in
+        *.sql.gz) suffix=".sql.gz" ;;
+        *.sql) suffix=".sql" ;;
+        *.gz) suffix=".gz" ;;
+        *.zip) suffix=".zip" ;;
+    esac
     ts="$(date +%Y%m%d_%H%M%S)"
-    safe_name="$(printf '%s' "$doc_name" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-64)"
-    [[ -z "$safe_name" ]] && safe_name="dump.sql.gz"
-    local_file="$IMPORT_DIR/${ts}__${safe_name}"
+    if ! local_file=$(mktemp "${IMPORT_DIR}/${ts}_${uid}_XXXXXX${suffix}"); then
+        [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "❌ Не удалось создать уникальный файл для импорта" "$(kb_remna)"
+        return 0
+    fi
 
     if ! curl -s --max-time 600 -o "$local_file" "https://api.telegram.org/file/bot${BOT_TOKEN}/${remote_path}"; then
         rm -f "$local_file"
@@ -1130,13 +1210,16 @@ handle_document() {
     local real_size
     real_size=$(bytes_of "$local_file")
     if (( real_size > TG_MAX_DOWNLOAD_MB * 1024 * 1024 )); then
+        local downloaded_size
+        downloaded_size=$(human_size "$local_file")
         rm -f "$local_file"
-        [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "$(limits_instruction download "$(human_size "$local_file")" "")" "$(kb_remna)"
+        [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "$(limits_instruction download "$downloaded_size" "")" "$(kb_remna)"
         return 0
     fi
 
     if ! validate_dump "$local_file"; then
         local reason="$VD_REASON"
+        cleanup_vd
         rm -f "$local_file"
         [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "❌ <b>Файл отклонён</b>
 ➖➖➖➖➖
@@ -1146,8 +1229,15 @@ $(escape_html "$reason")" "$(kb_remna)"
 
     local tables_count
     tables_count=$(printf '%s' "$VD_TABLES" | wc -w | tr -d ' ')
+    cleanup_vd
 
-    printf '%s\n' "$local_file" > "$STATE_DIR/pending_import"
+    pending_clear "$uid"
+    if ! printf '%s\n' "$local_file" > "$STATE_DIR/pending_import_${uid}"; then
+        cleanup_vd
+        rm -f "$local_file"
+        [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "❌ Не удалось сохранить состояние импорта" "$(kb_remna)"
+        return 0
+    fi
 
     local summary
     summary="✅ <b>Файл проверен</b>
@@ -1180,7 +1270,7 @@ flow_import_run() {
     local chat_id="$1" thread="$2" uid="$3"
 
     local pending
-    pending="$(pending_file_path)"
+    pending="$(pending_file_path "$uid")"
     if [[ -z "$pending" || ! -f "$pending" ]]; then
         tg_send "$chat_id" "⚠️ Файл не найден — пришлите дамп заново." "$(kb_remna)" "$thread" > /dev/null
         return 0
@@ -1197,7 +1287,8 @@ flow_import_run() {
 
     if ! validate_dump "$pending"; then
         local reason="$VD_REASON"
-        pending_clear
+        cleanup_vd
+        pending_clear "$uid"
         [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "❌ <b>Импорт отменён</b>
 ➖➖➖➖➖
 $(escape_html "$reason")" "$(kb_remna)"
@@ -1206,18 +1297,23 @@ $(escape_html "$reason")" "$(kb_remna)"
     local sql="$VD_SQL"
 
     if ! db_running; then
-        cleanup_vd; pending_clear
+        cleanup_vd; pending_clear "$uid"
         [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "❌ Контейнер БД <code>$(escape_html "$DB_CONTAINER")</code> не запущен." "$(kb_remna)"
         return 0
     fi
 
-    mkdir -p "$SAFETY_DIR"
+    if ! mkdir -p "$SAFETY_DIR"; then
+        cleanup_vd
+        pending_clear "$uid"
+        [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "❌ Не удалось создать каталог страховочных дампов" "$(kb_remna)"
+        return 0
+    fi
     local ts safety
     ts="$(date +%Y-%m-%d_%H_%M_%S)"
     safety="$SAFETY_DIR/pre_restore_${ts}.sql.gz"
 
     if ! dump_to_file "$safety" "$STATE_DIR/safety.err"; then
-        cleanup_vd; pending_clear
+        cleanup_vd; pending_clear "$uid"
         [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "❌ <b>Импорт отменён</b>
 ➖➖➖➖➖
 Не удалось сделать страховочный дамп — база не тронута." "$(kb_remna)"
@@ -1225,26 +1321,38 @@ $(escape_html "$reason")" "$(kb_remna)"
     fi
 
     local sql_copy="$STATE_DIR/import_${ts}.sql"
-    cp -f "$sql" "$sql_copy" 2>/dev/null || sql_copy="$sql"
+    if ! cp -f "$sql" "$sql_copy" 2>/dev/null; then
+        cleanup_vd
+        pending_clear "$uid"
+        [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "❌ Не удалось подготовить SQL для восстановления" "$(kb_remna)"
+        return 0
+    fi
 
     RESTORE_ROLLED_BACK=0
     RESTORE_ERRORS=0
     local ok=0
     restore_sql_file "$sql_copy" "" "$safety" && ok=1
 
-    rm -f "$sql_copy"
     cleanup_vd
-    pending_clear
 
     if (( ok == 1 )); then
+        pending_clear "$uid" keep
         local moved="$BACKUP_DIR/rw_db_backup_imported_${ts}.sql.gz"
         if [[ "$pending" == *.gz ]]; then
-            mv -f "$pending" "$moved" 2>/dev/null || rm -f "$pending"
+            mv -f "$pending" "$moved" 2>/dev/null || moved=""
         else
-            gzip -9 -c "$pending" > "$moved" 2>/dev/null && rm -f "$pending"
+            if gzip -9 -c "$sql_copy" > "$moved" 2>/dev/null; then
+                rm -f "$pending"
+            else
+                rm -f "$moved"
+                moved=""
+            fi
         fi
+        rm -f "$sql_copy"
         apply_retention "$KEEP_FILES"
 
+        local archive_note=""
+        [[ -n "$moved" ]] || archive_note=$'\n\n⚠️ SQL восстановлен, но исходный файл не удалось переместить в архив.'
         local upd
         upd="$(update_line)"
         [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "✅ <b>Импорт выполнен</b>
@@ -1252,14 +1360,20 @@ $(escape_html "$reason")" "$(kb_remna)"
 🗄 БД: <code>$(escape_html "$DB_NAME")</code>
 🖥 Панель: <b>healthy</b>
 ⚠️ Ошибок при заливке: ${RESTORE_ERRORS}
-🛡 Страховочный дамп: <code>$(escape_html "${safety##*/}")</code>${upd}" "$(kb_remna)"
+🛡 Страховочный дамп: <code>$(escape_html "${safety##*/}")</code>${archive_note}${upd}" "$(kb_remna)"
 
         notify_chat_text "✅ <b>Импорт БД Remnawave</b>
 ➖➖➖➖➖
 Выполнил админ <code>${uid}</code>
 📂 <code>$(escape_html "$(basename "$pending" 2>/dev/null)")</code>"
-        log "импорт выполнен, файл: $moved"
+        if [[ -n "$moved" ]]; then
+            log "импорт выполнен, файл: $moved"
+        else
+            log "импорт выполнен, но архив не перемещён; исходный файл: $pending"
+        fi
     else
+        rm -f "$sql_copy"
+        pending_clear "$uid"
         local rolled="нет"
         (( RESTORE_ROLLED_BACK == 1 )) && rolled="да — база восстановлена из страховочного дампа"
         [[ -n "$status_id" ]] && tg_edit "$chat_id" "$status_id" "❌ <b>Импорт не удался</b>
@@ -1333,12 +1447,19 @@ flow_send_archive() {
         return 0
     fi
 
-    local upd
+    local upd sent
     upd="$(update_line)"
-    tg_doc "$chat_id" "$f" "💎 <b>$(escape_html "${f##*/}")</b>
+    sent=$(tg_doc "$chat_id" "$f" "💎 <b>$(escape_html "${f##*/}")</b>
 ➖➖➖➖➖
 📏 $(human_size "$f")
-📅 $(date -r "$f" +'%d.%m.%Y %H:%M')${upd}" "$thread" > /dev/null
+📅 $(date -r "$f" +'%d.%m.%Y %H:%M')${upd}" "$thread")
+    if ! tg_ok "$sent"; then
+        sent=$(tg_doc "$chat_id" "$f" "" "$thread")
+    fi
+    if ! tg_ok "$sent"; then
+        tg_send "$chat_id" "⚠️ Не удалось отправить архив: $(escape_html "$(tg_error_of "$sent")")
+📂 <code>$(escape_html "$f")</code>" "$(kb_remna)" "$thread" > /dev/null
+    fi
     return 0
 }
 
@@ -1358,27 +1479,47 @@ await_clear() {
 }
 
 cron_remove() {
-    command -v crontab > /dev/null 2>&1 || return 0
-    (crontab -l 2>/dev/null | grep -v 'rw-back-bot.sh cron') | crontab - 2>/dev/null || true
+    cron_apply 0
 }
 
 cron_apply() {
     local hours="$1"
-    command -v crontab > /dev/null 2>&1 || return 1
-    cron_remove
-    (( hours <= 0 )) && return 0
-
-    local line="0 */${hours} * * * /bin/bash $INSTALL_DIR/rw-back-bot.sh cron >> /var/log/rw-back-cron.log 2>&1"
-    local tmp
+    if ! command -v crontab > /dev/null 2>&1; then
+        (( hours <= 0 )) && return 0
+        return 1
+    fi
+    local line="0 * * * * /bin/bash $INSTALL_DIR/rw-back-bot.sh cron >> /var/log/rw-back-cron.log 2>&1"
+    local tmp rc listing
+    listing=$(crontab -l 2>&1)
+    rc=$?
+    if (( rc != 0 )); then
+        if grep -qi 'no crontab for' <<< "$listing"; then
+            listing=""
+        else
+            log "не удалось прочитать crontab — существующие задачи не изменены"
+            return 1
+        fi
+    fi
     tmp="$(mktemp)" || return 1
-    crontab -l 2>/dev/null > "$tmp" || true
-    grep -q '^SHELL=' "$tmp" || printf 'SHELL=/bin/bash\n' | cat - "$tmp" > "$tmp.2" && mv -f "$tmp.2" "$tmp" 2>/dev/null
-    grep -q '^PATH=' "$tmp" || printf 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' | cat - "$tmp" > "$tmp.2" && mv -f "$tmp.2" "$tmp" 2>/dev/null
-    printf '%s\n' "$line" >> "$tmp"
+    printf '%s\n' "$listing" | grep -v 'rw-back-bot.sh cron' > "$tmp"
+    rc=$?
+    if (( rc > 1 )); then
+        rm -f "$tmp"
+        return 1
+    fi
+    if (( hours > 0 )); then
+        if ! grep -q '^SHELL=' "$tmp"; then
+            printf 'SHELL=/bin/bash\n' | cat - "$tmp" > "$tmp.2" && mv -f "$tmp.2" "$tmp" || { rm -f "$tmp" "$tmp.2"; return 1; }
+        fi
+        if ! grep -q '^PATH=' "$tmp"; then
+            printf 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' | cat - "$tmp" > "$tmp.2" && mv -f "$tmp.2" "$tmp" || { rm -f "$tmp" "$tmp.2"; return 1; }
+        fi
+        printf '%s\n' "$line" >> "$tmp" || { rm -f "$tmp" "$tmp.2"; return 1; }
+    fi
     crontab "$tmp" 2>/dev/null
-    local rc=$?
+    rc=$?
     rm -f "$tmp" "$tmp.2"
-    return $rc
+    return "$rc"
 }
 
 send_main_menu() {
@@ -1447,14 +1588,14 @@ handle_update() {
                     ;;
                 set_hours)
                     local hours
-                    hours=$(printf '%s' "$text" | tr -dc '0-9')
+                    hours=$(printf '%s' "$text" | tr -d '[:space:]')
                     await_clear "$uid"
                     apply_schedule "$chat_id" "$thread" "$hours"
                     return 0
                     ;;
                 set_keep)
                     local keep
-                    keep=$(printf '%s' "$text" | tr -dc '0-9')
+                    keep=$(printf '%s' "$text" | tr -d '[:space:]')
                     await_clear "$uid"
                     apply_keep "$chat_id" "$thread" "$keep"
                     return 0
@@ -1486,7 +1627,7 @@ handle_update() {
                 flow_list "$chat_id" "$thread"
                 ;;
             /cancel|отмена)
-                pending_clear
+                pending_clear "$uid"
                 await_clear "$uid"
                 tg_send "$chat_id" "↩️ Отменено." "$(kb_remna)" "$thread" > /dev/null
                 ;;
@@ -1549,20 +1690,28 @@ ID можно узнать в @userinfobot.
                 tg_edit "$chat_id" "$msg_id" "⚠️ Нельзя удалить последнего админа — бот станет неуправляемым." "$(kb_admins)"
                 return 0
             fi
-            local new_ids
-            new_ids=$(printf '%s' "$(normalize_ids "$BOT_ADMIN_IDS")" | tr ',' '\n' | grep -v -x "$remove_id" | paste -sd, -)
+            local new_ids old_ids="$BOT_ADMIN_IDS"
+            if ! new_ids=$(printf '%s' "$(normalize_ids "$BOT_ADMIN_IDS")" | tr ',' '\n' | grep -v -x -- "$remove_id" | paste -sd, -) || [[ -z "$new_ids" ]]; then
+                tg_edit "$chat_id" "$msg_id" "❌ Не удалось изменить список админов — исходный список сохранён." "$(kb_admins)"
+                return 0
+            fi
+            if [[ "$new_ids" == "$(normalize_ids "$old_ids")" ]]; then
+                tg_edit "$chat_id" "$msg_id" "⚠️ Админ <code>${remove_id}</code> не найден." "$(kb_admins)"
+                return 0
+            fi
             BOT_ADMIN_IDS="$new_ids"
-            save_config
+            if ! save_config; then
+                BOT_ADMIN_IDS="$old_ids"
+                tg_edit "$chat_id" "$msg_id" "❌ Не удалось сохранить список админов." "$(kb_admins)"
+                return 0
+            fi
             tg_edit "$chat_id" "$msg_id" "✅ Админ <code>${remove_id}</code> удалён.
 
 $(admins_text)" "$(kb_admins)"
             ;;
 
         h:0)
-            CRON_HOURS=0
-            save_config
-            cron_apply 0
-            tg_edit "$chat_id" "$msg_id" "📴 <b>Автобэкап выключен</b>" "$(kb_schedule)"
+            apply_schedule "$chat_id" "$thread" 0 "$msg_id"
             ;;
         h:custom)
             await_set "$uid" "set_hours" ""
@@ -1585,7 +1734,7 @@ $(admins_text)" "$(kb_admins)"
 
         i:yes) flow_import_run "$chat_id" "$thread" "$uid" ;;
         i:no)
-            pending_clear
+            pending_clear "$uid"
             tg_edit "$chat_id" "$msg_id" "❌ <b>Импорт отменён</b>
 ➖➖➖➖➖
 База не тронута." "$(kb_remna)"
@@ -1598,27 +1747,37 @@ $(admins_text)" "$(kb_admins)"
 }
 
 apply_schedule() {
-    local chat_id="$1" thread="$2" hours="$3" edit_id="${4:-}"
-    [[ "$hours" =~ ^[0-9]+$ ]] || {
+    local chat_id="$1" thread="$2" hours="$3" edit_id="${4:-}" old_hours="$CRON_HOURS"
+    [[ "$hours" =~ ^[0-9]{1,3}$ ]] || {
         tg_send "$chat_id" "⚠️ Нужно число часов." "$(kb_schedule)" "$thread" > /dev/null
         return 0
     }
-    if (( hours < 1 || hours > 168 )); then
-        tg_send "$chat_id" "⚠️ Допустимо от 1 до 168 часов." "$(kb_schedule)" "$thread" > /dev/null
+    hours=$((10#$hours))
+    if (( hours < 0 || hours > 168 )); then
+        tg_send "$chat_id" "⚠️ Допустимо от 1 до 168 часов или 0 — выключить." "$(kb_schedule)" "$thread" > /dev/null
         return 0
     fi
 
     CRON_HOURS="$hours"
-    save_config
     if ! cron_apply "$hours"; then
-        tg_send "$chat_id" "❌ Не удалось записать cron (нет прав root?)." "$(kb_schedule)" "$thread" > /dev/null
+        CRON_HOURS="$old_hours"
+        tg_send "$chat_id" "❌ Не удалось записать cron. Прежнее расписание сохранено." "$(kb_schedule)" "$thread" > /dev/null
+        return 0
+    fi
+    if ! save_config; then
+        CRON_HOURS="$old_hours"
+        cron_apply "$old_hours" > /dev/null 2>&1 || true
+        tg_send "$chat_id" "❌ Не удалось сохранить расписание в конфигурацию." "$(kb_schedule)" "$thread" > /dev/null
         return 0
     fi
 
-    local text="✅ <b>Расписание обновлено</b>
+    local text="📴 <b>Автобэкап выключен</b>"
+    if (( hours > 0 )); then
+        text="✅ <b>Расписание обновлено</b>
 ➖➖➖➖➖
 ⏰ Каждые <b>${hours} ч</b>
 📥 Дамп придёт в личку админам"
+    fi
 
     if [[ -n "$edit_id" ]]; then
         tg_edit "$chat_id" "$edit_id" "$text" "$(kb_schedule)"
@@ -1630,17 +1789,23 @@ apply_schedule() {
 
 apply_keep() {
     local chat_id="$1" thread="$2" value="$3" edit_id="${4:-}"
-    [[ "$value" =~ ^[0-9]+$ ]] || {
+    [[ "$value" =~ ^[0-9]{1,3}$ ]] || {
         tg_send "$chat_id" "⚠️ Нужно число." "$(kb_keep)" "$thread" > /dev/null
         return 0
     }
+    value=$((10#$value))
     if (( value < 1 || value > 200 )); then
         tg_send "$chat_id" "⚠️ Допустимо от 1 до 200." "$(kb_keep)" "$thread" > /dev/null
         return 0
     fi
 
+    local old_keep="$KEEP_FILES"
     KEEP_FILES="$value"
-    save_config
+    if ! save_config; then
+        KEEP_FILES="$old_keep"
+        tg_send "$chat_id" "❌ Не удалось сохранить лимит в конфигурацию." "$(kb_keep)" "$thread" > /dev/null
+        return 0
+    fi
     apply_retention "$value"
 
     local text="✅ <b>Хранение обновлено</b>
@@ -1668,9 +1833,9 @@ add_admin_by_input() {
         local username="${input#@}"
         local resp
         resp=$(tg_call getChat --data-urlencode "chat_id=@${username}")
-        new_id=$(printf '%s' "$resp" | jq -r '.result.id // empty' 2>/dev/null)
-        if [[ -z "$new_id" ]]; then
-            tg_send "$chat_id" "❌ Не нашёл @${username}.
+        new_id=$(printf '%s' "$resp" | jq -r 'if .result.type == "private" then (.result.id // empty) else empty end' 2>/dev/null)
+        if [[ ! "$new_id" =~ ^[0-9]{5,20}$ ]]; then
+            tg_send "$chat_id" "❌ Не нашёл пользователя @${username}.
 Пусть человек нажмёт /start у бота, затем добавьте по ID." "$(kb_admins)" "$thread" > /dev/null
             return 0
         fi
@@ -1687,7 +1852,11 @@ add_admin_by_input() {
     fi
 
     BOT_ADMIN_IDS="$(normalize_ids "${ids:+$ids,}${new_id}")"
-    save_config
+    if ! save_config; then
+        BOT_ADMIN_IDS="$ids"
+        tg_send "$chat_id" "❌ Не удалось сохранить админа в конфигурацию." "$(kb_admins)" "$thread" > /dev/null
+        return 0
+    fi
 
     tg_send "$chat_id" "✅ Админ <code>${new_id}</code> добавлен.
 
@@ -1696,22 +1865,33 @@ $(admins_text)" "$(kb_admins)" "$thread" > /dev/null
 }
 
 serve() {
+    if [[ -z "${BOT_TOKEN:-}" ]]; then
+        print_message "WARN" "Telegram не настроен: BOT_TOKEN пуст. Служба остановлена без перезапуска."
+        print_message "INFO" "Настроить: rw-back → Telegram-бот"
+        return 0
+    fi
     require_deps || die "Нужны curl, jq, gzip. Установите: apt-get install -y curl jq gzip"
 
-    if [[ -z "${BOT_TOKEN:-}" ]]; then
-        die "Не задан BOT_TOKEN (см. $CONFIG_FILE)"
-    fi
-
-    mkdir -p "$BACKUP_DIR" "$STATE_DIR" "$IMPORT_DIR"
+    mkdir -p "$BACKUP_DIR" "$STATE_DIR" "$IMPORT_DIR" || die "Не удалось создать рабочие каталоги"
     chmod 700 "$INSTALL_DIR" "$STATE_DIR" "$BACKUP_DIR" 2>/dev/null || true
-
-    local me
-    me=$(tg_call getMe)
-    if ! tg_ok "$me"; then
-        die "Telegram не принял токен: $(tg_error_of "$me")"
+    if command -v flock > /dev/null 2>&1; then
+        exec 8> "$STATE_DIR/serve.lock" || die "Не удалось открыть serve.lock"
+        flock -n 8 || die "Бот уже запущен. Остановите службу или другой консольный экземпляр."
+    else
+        log "flock не найден — защита от второго экземпляра недоступна"
     fi
-    local username
-    username=$(printf '%s' "$me" | jq -r '.result.username // "bot"' 2>/dev/null)
+    if (( CRON_HOURS > 0 )); then
+        cron_apply "$CRON_HOURS" || log "не удалось обновить cron-расписание"
+    fi
+
+    local me username="bot"
+    me=$(tg_call getMe)
+    if [[ -z "$me" ]]; then
+        print_message "WARN" "Telegram пока недоступен. Бот будет повторять подключение автоматически."
+    else
+        tg_ok "$me" || die "Telegram не принял токен: $(tg_error_of "$me")"
+        username=$(printf '%s' "$me" | jq -r '.result.username // "bot"' 2>/dev/null)
+    fi
 
     local hook hook_url
     hook=$(tg_call getWebhookInfo)
@@ -1736,6 +1916,11 @@ serve() {
     [[ "$offset" =~ ^[0-9]+$ ]] || offset=0
 
     while true; do
+        load_config
+        if [[ -z "${BOT_TOKEN:-}" ]]; then
+            print_message "WARN" "BOT_TOKEN удалён из конфигурации. Останавливаю службу без цикла ошибок."
+            return 0
+        fi
         local response
         response=$(curl -s --max-time 70 "https://api.telegram.org/bot${BOT_TOKEN}/getUpdates" \
             --data-urlencode "offset=$offset" \
@@ -1747,6 +1932,25 @@ serve() {
             continue
         fi
         if ! tg_ok "$response"; then
+            local error_code retry_after
+            error_code=$(printf '%s' "$response" | jq -r '.error_code // 0' 2>/dev/null)
+            case "$error_code" in
+                401|404)
+                    log "getUpdates: токен отклонён Telegram ($(tg_error_of "$response")). Останавливаю процесс."
+                    return 1
+                    ;;
+                409)
+                    log "getUpdates: конфликт второго polling-экземпляра. Останавливаю процесс."
+                    return 1
+                    ;;
+                429)
+                    retry_after=$(printf '%s' "$response" | jq -r '.parameters.retry_after // 5' 2>/dev/null)
+                    [[ "$retry_after" =~ ^[0-9]+$ ]] || retry_after=5
+                    log "getUpdates: лимит Telegram, пауза $retry_after с"
+                    sleep "$retry_after"
+                    continue
+                    ;;
+            esac
             log "getUpdates: $(tg_error_of "$response")"
             sleep 5
             continue
@@ -1757,31 +1961,36 @@ serve() {
         [[ "$count" =~ ^[0-9]+$ ]] || count=0
 
         if (( count > 0 )); then
-            local last failed=0
-            last=$(printf '%s' "$response" | jq -r '.result[-1].update_id' 2>/dev/null)
+            local update_id next_offset
             while IFS= read -r upd; do
-                (
+                if (
                     exec 9> "$STATE_DIR/ops.lock" 2>/dev/null || exit 1
                     if command -v flock > /dev/null 2>&1; then
                         flock -w 30 9 || { log "не дождался ops.lock — апдейт вернётся в очередь"; exit 1; }
                     fi
+                    load_config
+                    [[ -n "${BOT_TOKEN:-}" ]] || exit 1
                     handle_update "$upd"
-                ) || {
-                    failed=1
-                    log "апдейт не обработан — оставляю в очереди"
-                }
+                ); then
+                    update_id=$(printf '%s' "$upd" | jq -r '.update_id // empty' 2>/dev/null)
+                    [[ "$update_id" =~ ^[0-9]+$ ]] || { log "update без корректного update_id"; return 1; }
+                    next_offset=$((update_id + 1))
+                    if ! printf '%s\n' "$next_offset" > "$STATE_DIR/offset.tmp" || ! mv -f "$STATE_DIR/offset.tmp" "$STATE_DIR/offset"; then
+                        log "не удалось сохранить offset — процесс остановлен во избежание повторных операций"
+                        return 1
+                    fi
+                    offset="$next_offset"
+                else
+                    log "апдейт не обработан — следующий poll начнётся с него, предыдущие не повторятся"
+                    break
+                fi
             done < <(printf '%s' "$response" | jq -c '.result[]' 2>/dev/null)
-            if (( failed == 0 )) && [[ "$last" =~ ^[0-9]+$ ]]; then
-                offset=$((last + 1))
-                echo "$offset" > "$STATE_DIR/offset"
-            fi
         fi
     done
 }
 
 cmd_cron() {
     require_deps || die "нет зависимостей"
-    [[ -n "${BOT_TOKEN:-}" ]] || die "нет BOT_TOKEN"
 
     mkdir -p "$STATE_DIR" "$BACKUP_DIR" "$SAFETY_DIR" "$IMPORT_DIR" 2>/dev/null
 
@@ -1789,6 +1998,17 @@ cmd_cron() {
     flock -w 300 9 || die "операция уже выполняется"
 
     (( CRON_HOURS > 0 )) || { log "расписание выключено — выхожу"; return 0; }
+    local now last=0 interval
+    now=$(date +%s)
+    if [[ -f "$STATE_DIR/cron_last_run" ]]; then
+        last=$(head -n 1 "$STATE_DIR/cron_last_run" 2>/dev/null)
+        [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    fi
+    interval=$((CRON_HOURS * 3600))
+    if (( last > 0 && now - last < interval )); then
+        log "интервал ${CRON_HOURS} ч ещё не истёк — пропускаю запуск"
+        return 0
+    fi
     db_running || die "контейнер БД не запущен"
 
     local ts file
@@ -1797,6 +2017,9 @@ cmd_cron() {
 
     dump_to_file "$file" "$STATE_DIR/cron.err" || die "pg_dumpall вернул ошибку"
     apply_retention "$KEEP_FILES"
+    if ! printf '%s\n' "$now" > "$STATE_DIR/cron_last_run.tmp" || ! mv -f "$STATE_DIR/cron_last_run.tmp" "$STATE_DIR/cron_last_run"; then
+        log "не удалось сохранить время автобэкапа — при следующем запуске возможна повторная копия"
+    fi
 
     local size
     size=$(human_size "$file")
@@ -1810,8 +2033,8 @@ cmd_cron() {
     local ids uid
     local -a arr=()
     ids="$(normalize_ids "$BOT_ADMIN_IDS")"
-    if [[ -z "$ids" ]]; then
-        log "админы не заданы — рассылать некому"
+    if [[ -z "$ids" || -z "${BOT_TOKEN:-}" ]]; then
+        log "автобэкап сохранён локально: Telegram не настроен или админы не заданы"
         return 0
     fi
 
@@ -1856,7 +2079,11 @@ cmd_backup() {
                     tg_doc "$uid" "$file" "💾 Ручной бэкап · $(human_size "$file")" > /dev/null 2>&1 || true
                 fi
             done
+        else
+            print_message "INFO" "Админы не заданы — дамп сохранён только локально"
         fi
+    else
+        print_message "INFO" "Telegram не настроен — дамп сохранён только локально"
     fi
     return 0
 }
@@ -1897,7 +2124,9 @@ cmd_restore() {
     flock -w 60 9 || die "операция уже выполняется"
 
     if ! validate_dump "$file"; then
-        die "файл отклонён: $VD_REASON"
+        local reason="$VD_REASON"
+        cleanup_vd
+        die "файл отклонён: $reason"
     fi
     local sql="$VD_SQL"
 
@@ -1920,7 +2149,8 @@ cmd_restore() {
     if (( RESTORE_ROLLED_BACK == 1 )); then
         print_message "WARN" "База восстановлена из страховочного дампа"
     else
-        print_message "ERROR" "Откат не выполнен — проверьте: $RESTORE_LOG"
+        print_message "ERROR" "Откат не выполнен — основной лог: $RESTORE_LOG"
+        [[ -z "${RESTORE_ROLLBACK_LOG:-}" ]] || print_message "ERROR" "Лог отката: $RESTORE_ROLLBACK_LOG"
     fi
     return 1
 }

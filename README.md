@@ -10,7 +10,7 @@
   <img src="https://skillicons.dev/icons?i=bash,docker,linux,ubuntu,postgres&theme=dark" alt="Bash · Docker · Linux · Ubuntu · PostgreSQL"/>
 </p>
 
-[![Version](https://img.shields.io/badge/version-2.1.4-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](VERSION)
+[![Version](https://img.shields.io/badge/version-2.2.0-0891b2?style=for-the-badge&labelColor=0d1117&logo=github)](VERSION)
 [![Remnawave](https://img.shields.io/badge/Remnawave-3.4.11-2563eb?style=for-the-badge&labelColor=0d1117)](https://github.com/remnawave/backend)
 [![Stars](https://img.shields.io/github/stars/CyberERROR/rw-back?style=for-the-badge&labelColor=0d1117&logo=github&label=stars&color=7c3aed)](https://github.com/CyberERROR/rw-back/stargazers)
 [![Telegram](https://img.shields.io/badge/Telegram-%D1%87%D0%B0%D1%82-9333ea?style=for-the-badge&labelColor=0d1117&logo=telegram&logoColor=white)](https://t.me/+YV_BO1cmGWw5OTdi)
@@ -107,9 +107,12 @@ ssh root@your-server-ip
 curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh | bash
 ```
 
+> [!TIP]
+> **Telegram необязателен.** Поле токена можно оставить пустым: локальные бэкап, восстановление и список архивов будут работать сразу. Бот настраивается позже через `rw-back` → **Telegram-бот** или **Настройки → Telegram** — без переустановки.
+
 <img src="https://img.shields.io/badge/%D0%A8%D0%90%D0%93%203-%D0%9F%D1%80%D0%B8%D0%B2%D1%8F%D0%B6%D0%B8%D1%82%D0%B5_%D0%B0%D0%B4%D0%BC%D0%B8%D0%BD%D0%B0-7c3aed?style=for-the-badge&labelColor=0d1117" alt="Шаг 3"/>
 
-Установщик проверит токен бота и покажет **код привязки**:
+Если вы указали токен, установщик проверит его, запустит службу и покажет **код привязки**:
 
 ```text
 🔑 КОД ПРИВЯЗКИ АДМИНА:  847213
@@ -160,7 +163,7 @@ curl -sSL https://raw.githubusercontent.com/CyberERROR/rw-back/main/install.sh |
 | Команда | Что делает |
 |:--|:--|
 | `rw-back` | меню |
-| `rw-back backup` | бэкап + отправка админам |
+| `rw-back backup` | бэкап + отправка админам, если Telegram настроен |
 | `rw-back restore ФАЙЛ` | восстановить БД |
 | `rw-back validate ФАЙЛ` | проверить дамп |
 | `rw-back list` | список архивов |
