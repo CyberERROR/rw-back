@@ -538,6 +538,83 @@ backup_caption() {
 🛡 CyberERROR"
 }
 
+kb_update() {
+    printf '%s' '{"inline_keyboard":[[{"text":"🔄 Обновить","callback_data":"u:go"}]]}'
+}
+
+update_notice_text() {
+    local remote="$1"
+    printf '%s' "⚠️ <b>Доступно обновление скрипта</b>
+➖➖➖➖➖
+🔄 Текущая версия: <b>$(escape_html "$LOCAL_VERSION")</b>
+🆕 Актуальная версия: <b>$(escape_html "${remote#v}")</b>"
+}
+
+notify_update_available() {
+    local chat_id="$1" thread="${2:-}" remote
+    [[ -n "$chat_id" ]] || return 0
+    remote="$(update_check)"
+    [[ -z "$remote" ]] && return 0
+    version_compare "$LOCAL_VERSION" "$remote" || return 0
+    tg_send "$chat_id" "$(update_notice_text "$remote")" "$(kb_update)" "$thread" > /dev/null 2>&1 || true
+    return 0
+}
+
+notify_update_done() {
+    local chat expected
+    [[ -f "$STATE_DIR/update_notify_chat" ]] || return 0
+    IFS='|' read -r chat expected < "$STATE_DIR/update_notify_chat" 2>/dev/null
+    rm -f "$STATE_DIR/update_notify_chat"
+    [[ -n "$chat" ]] || return 0
+    if [[ -n "$expected" && "${expected#v}" != "${LOCAL_VERSION#v}" ]]; then
+        tg_send "$chat" "⚠️ <b>Обновление не завершилось</b>
+➖➖➖➖➖
+🔄 Сейчас: <b>$(escape_html "$LOCAL_VERSION")</b>
+🆕 Ожидалось: <b>$(escape_html "${expected#v}")</b>
+
+Проверьте на сервере:
+<code>rw-back update</code>" "$KB_MAIN" > /dev/null 2>&1 || true
+        return 0
+    fi
+    tg_send "$chat" "✅ <b>Обновление установлено</b>
+➖➖➖➖➖
+🆕 Версия: <b>$(escape_html "$LOCAL_VERSION")</b>
+🟢 Бот уже работает" "$KB_MAIN" > /dev/null 2>&1 || true
+    return 0
+}
+
+flow_update_run() {
+    local chat_id="$1" thread="$2" uid="$3"
+    local remote
+    remote="$(update_check)"
+
+    if [[ -z "$remote" ]] || ! version_compare "$LOCAL_VERSION" "$remote"; then
+        tg_send "$chat_id" "✅ <b>Уже последняя версия</b>
+➖➖➖➖➖
+🟢 ${LOCAL_VERSION}" "$KB_MAIN" "$thread" > /dev/null
+        return 0
+    fi
+
+    tg_send "$chat_id" "⏳ <b>Обновляю до ${remote#v}</b>
+➖➖➖➖➖
+Бот перезапустится сам — пришлю отчёт." "" "$thread" > /dev/null
+
+    mkdir -p "$STATE_DIR" 2>/dev/null
+    printf '%s|%s\n' "$chat_id" "$remote" > "$STATE_DIR/update_notify_chat" 2>/dev/null
+    local log="$STATE_DIR/update.log"
+    local body="sleep 3; bash \"$INSTALL_DIR/install.sh\" update --auto"
+
+    if command -v systemd-run > /dev/null 2>&1; then
+        if systemd-run --quiet --collect --unit="rw-back-update-$$" /bin/bash -c "$body" >> "$log" 2>&1; then
+            log "обновление запущено через systemd-run (uid=$uid)"
+            return 0
+        fi
+    fi
+    setsid /bin/bash -c "$body" < /dev/null >> "$log" 2>&1 &
+    log "обновление запущено через setsid (uid=$uid)"
+    return 0
+}
+
 wait_panel_healthy() {
     local timeout="${1:-180}" waited=0 status
     panel_exists || return 0
@@ -1218,6 +1295,8 @@ $(escape_html "$reason")" "$(kb_remna)" "$thread" > /dev/null
 📏 ${size_h}${note}" "$(kb_remna)"
     fi
 
+    notify_update_available "$notify_to" "$thread"
+
     log "экспорт: $file ($size_h)"
     return 0
 }
@@ -1786,6 +1865,8 @@ handle_update() {
         s:days) tg_edit "$chat_id" "$msg_id" "$(keep_days_text)" "$(kb_keep_days)" ;;
         s:storage) tg_edit "$chat_id" "$msg_id" "$(storage_text)" "$(kb_storage)" ;;
 
+        u:go) flow_update_run "$chat_id" "$thread" "$uid" ;;
+
         a:add)
             await_set "$uid" "add_admin" ""
             tg_edit "$chat_id" "$msg_id" "➕ <b>Новый админ</b>
@@ -2083,6 +2164,7 @@ serve() {
     fi
 
     print_message "SUCCESS" "Бот @${username} запущен · v${LOCAL_VERSION} · админов: $(admin_count)"
+    notify_update_done
 
     local offset=0
     [[ -f "$STATE_DIR/offset" ]] && offset=$(cat "$STATE_DIR/offset" 2>/dev/null || echo 0)
@@ -2213,6 +2295,7 @@ cmd_cron() {
         else
             tg_doc "$uid" "$file" "$caption" > /dev/null 2>&1 || true
         fi
+        notify_update_available "$uid"
     done
 
     log "автобэкап: $file ($size)"
@@ -2248,6 +2331,7 @@ cmd_backup() {
                 else
                     tg_doc "$uid" "$file" "$caption" > /dev/null 2>&1 || true
                 fi
+                notify_update_available "$uid"
             done
         else
             print_message "INFO" "Админы не заданы — дамп сохранён только локально"
