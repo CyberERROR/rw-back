@@ -397,9 +397,9 @@ version_compare() {
 }
 
 update_check() {
-    local cache="$STATE_DIR/update_cache"
+    local force="${1:-}" cache="$STATE_DIR/update_cache"
     mkdir -p "$STATE_DIR" 2>/dev/null
-    if [[ -f "$cache" ]]; then
+    if [[ "$force" != "force" && -f "$cache" ]]; then
         local ts ver
         ts=$(cut -d'|' -f1 "$cache" 2>/dev/null)
         ver=$(cut -d'|' -f2 "$cache" 2>/dev/null)
@@ -618,7 +618,7 @@ update_notice_text() {
 notify_update_available() {
     local chat_id="$1" thread="${2:-}" remote
     [[ -n "$chat_id" ]] || return 0
-    remote="$(update_check)"
+    remote="$(update_check force)"
     [[ -z "$remote" ]] && return 0
     version_compare "$LOCAL_VERSION" "$remote" || return 0
     tg_send "$chat_id" "$(update_notice_text "$remote")" "$(kb_update)" "$thread" > /dev/null 2>&1 || true
@@ -645,6 +645,19 @@ notify_update_done() {
 ➖➖➖➖➖
 🆕 Версия: <b>$(escape_html "$LOCAL_VERSION")</b>
 🟢 Бот уже работает" "$KB_MAIN" > /dev/null 2>&1 || true
+    return 0
+}
+
+flow_update_check() {
+    local chat_id="$1" thread="${2:-}" remote
+    remote="$(update_check force)"
+    if [[ -z "$remote" ]] || ! version_compare "$LOCAL_VERSION" "$remote"; then
+        tg_send "$chat_id" "✅ <b>Обновлений нет</b>
+➖➖➖➖➖
+🟢 Версия: <b>$(escape_html "$LOCAL_VERSION")</b>" "$KB_MAIN" "$thread" > /dev/null
+        return 0
+    fi
+    tg_send "$chat_id" "$(update_notice_text "$remote")" "$(kb_update)" "$thread" > /dev/null
     return 0
 }
 
@@ -1880,6 +1893,9 @@ handle_update() {
                 ;;
             /list|list|бэкапы)
                 flow_list "$chat_id" "$thread"
+                ;;
+            /update|update|обновление|обновить)
+                flow_update_check "$chat_id" "$thread"
                 ;;
             /cancel|отмена)
                 pending_clear "$uid"
