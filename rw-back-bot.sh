@@ -461,6 +461,73 @@ db_size_text() {
     echo "${size:-—}"
 }
 
+panel_version() {
+    local image image_id version tag
+    image=$(docker inspect --format '{{.Config.Image}}' "$PANEL_CONTAINER" 2>/dev/null || true)
+    image_id=$(docker inspect --format '{{.Image}}' "$PANEL_CONTAINER" 2>/dev/null || true)
+    if [[ -n "$image_id" ]]; then
+        version=$(docker image inspect "$image_id" --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null || true)
+        if [[ "$version" =~ ^v?[0-9]+([.][0-9]+)+ ]]; then
+            printf '%s' "${version#v}"
+            return 0
+        fi
+    fi
+    tag="${image##*:}"
+    if [[ "$image" != *@* && "$tag" =~ ^v?[0-9]+([.][0-9]+)+ ]]; then
+        printf '%s' "${tag#v}"
+    else
+        printf '—'
+    fi
+}
+
+cpu_usage_text() {
+    local cores first second usage word
+    cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+    [[ "$cores" =~ ^[0-9]+$ ]] || cores=1
+    first=$(awk 'NR==1{print $2,$3,$4,$5,$6,$7,$8,$9; exit}' /proc/stat 2>/dev/null)
+    sleep 1
+    second=$(awk 'NR==1{print $2,$3,$4,$5,$6,$7,$8,$9; exit}' /proc/stat 2>/dev/null)
+    usage=$(awk -v a="$first" -v b="$second" 'BEGIN{
+        split(a,x," "); split(b,y," ");
+        for(i=1;i<=8;i++){da[i]=y[i]-x[i]; total+=da[i]}
+        idle=da[4]+da[5];
+        if(total>0) printf "%.0f",100*(total-idle)/total; else printf "0"
+    }')
+    if (( cores % 100 >= 11 && cores % 100 <= 14 )); then word="ядер"
+    elif (( cores % 10 == 1 )); then word="ядро"
+    elif (( cores % 10 >= 2 && cores % 10 <= 4 )); then word="ядра"
+    else word="ядер"
+    fi
+    printf '%s %s (%s%%)' "$cores" "$word" "${usage:-0}"
+}
+
+disk_usage_text() {
+    df -Pk "$INSTALL_DIR" 2>/dev/null | awk 'NR==2{printf "%.1f ГБ / %.1f ГБ (%s)",$3/1048576,$2/1048576,$5; found=1} END{if(!found)printf "—"}'
+}
+
+memory_usage_text() {
+    free -b 2>/dev/null | awk '/^Mem:/{printf "%.1f ГБ / %.1f ГБ (%.0f%%)",$3/1073741824,$2/1073741824,100*$3/$2; found=1} END{if(!found)printf "—"}'
+}
+
+backup_caption() {
+    local file="$1" created_at="${2:-$(date +'%Y-%m-%d %H:%M:%S')}"
+    printf '%s' "💎 <b>DATABASE BACKUP</b> 💎
+#remna_bd_success
+➖➖➖➖➖➖➖➖➖➖➖➖➖➖
+✅ Резервная копия создана
+📆 Дата: ${created_at}
+🗂 Объем: $(human_size "$file")
+
+📊 <b>Информация:</b>
+1️⃣ Платформа: Remnawave $(panel_version)
+2️⃣ CPU: $(cpu_usage_text)
+3️⃣ Диск: $(disk_usage_text)
+4️⃣ Память: $(memory_usage_text)
+
+🏗 Команда: <code>rw-back</code>
+🛡 CyberERROR"
+}
+
 wait_panel_healthy() {
     local timeout="${1:-180}" waited=0 status
     panel_exists || return 0
@@ -1065,16 +1132,10 @@ $(escape_html "$reason")" "$(kb_remna)" "$thread" > /dev/null
 
     apply_retention "$KEEP_FILES"
 
-    local size_bytes size_h upd caption
+    local size_bytes size_h caption
     size_bytes=$(bytes_of "$file")
     size_h=$(human_size "$file")
-    upd="$(update_line)"
-
-    caption="💎 <b>Бэкап базы Remnawave</b>
-➖➖➖➖➖
-🗄 БД: <code>$(escape_html "$DB_NAME")</code>
-📏 Размер: <b>${size_h}</b>
-📅 $(date +'%d.%m.%Y %H:%M')${upd}"
+    caption="$(backup_caption "$file")"
 
     if (( size_bytes > TG_MAX_UPLOAD_MB * 1024 * 1024 )); then
         tg_send "$notify_to" "$(limits_instruction upload "$size_h" "$file")" "$(kb_remna)" "$thread" > /dev/null
@@ -1447,12 +1508,8 @@ flow_send_archive() {
         return 0
     fi
 
-    local upd sent
-    upd="$(update_line)"
-    sent=$(tg_doc "$chat_id" "$f" "💎 <b>$(escape_html "${f##*/}")</b>
-➖➖➖➖➖
-📏 $(human_size "$f")
-📅 $(date -r "$f" +'%d.%m.%Y %H:%M')${upd}" "$thread")
+    local sent
+    sent=$(tg_doc "$chat_id" "$f" "$(backup_caption "$f" "$(date -r "$f" +'%Y-%m-%d %H:%M:%S')")" "$thread")
     if ! tg_ok "$sent"; then
         sent=$(tg_doc "$chat_id" "$f" "" "$thread")
     fi
@@ -2021,14 +2078,9 @@ cmd_cron() {
         log "не удалось сохранить время автобэкапа — при следующем запуске возможна повторная копия"
     fi
 
-    local size
+    local size caption
     size=$(human_size "$file")
-    local caption
-    caption="🕒 <b>Автобэкап Remnawave</b>
-➖➖➖➖➖
-🗄 БД: <code>$(escape_html "$DB_NAME")</code>
-📏 Размер: <b>${size}</b>
-📅 $(date +'%d.%m.%Y %H:%M')"
+    caption="$(backup_caption "$file")"
 
     local ids uid
     local -a arr=()
@@ -2067,16 +2119,18 @@ cmd_backup() {
     print_message "SUCCESS" "Дамп: $file ($(human_size "$file"))"
 
     if [[ -n "${BOT_TOKEN:-}" ]]; then
-        local ids uid
+        local ids uid size caption
         local -a arr=()
         ids="$(normalize_ids "$BOT_ADMIN_IDS")"
         if [[ -n "$ids" ]]; then
+            size=$(human_size "$file")
+            caption="$(backup_caption "$file")"
             IFS=',' read -ra arr <<< "$ids"
             for uid in "${arr[@]}"; do
                 if (( $(bytes_of "$file") > TG_MAX_UPLOAD_MB * 1024 * 1024 )); then
-                    tg_send "$uid" "$(limits_instruction upload "$(human_size "$file")" "$file")" > /dev/null 2>&1 || true
+                    tg_send "$uid" "$(limits_instruction upload "$size" "$file")" > /dev/null 2>&1 || true
                 else
-                    tg_doc "$uid" "$file" "💾 Ручной бэкап · $(human_size "$file")" > /dev/null 2>&1 || true
+                    tg_doc "$uid" "$file" "$caption" > /dev/null 2>&1 || true
                 fi
             done
         else
