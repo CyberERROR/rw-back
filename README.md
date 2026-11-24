@@ -72,21 +72,13 @@
 </div>
 
 <details>
-<summary><b>📱 Скриншоты бота — 5 шт.</b></summary>
+<summary><b>📱 Скриншоты бота — 4 шт.</b></summary>
 
 <br>
 
 | <img src="img/bot-menu.png" width="340" alt="Главный экран бота"><br><sub><b>01</b> · 🤖 Главный экран</sub> | <img src="img/bot-backup.png" width="340" alt="Бэкап в чате"><br><sub><b>02</b> · 💾 Бэкап в чате</sub> |
 |:--:|:--:|
 | <img src="img/bot-remnawave.png" width="340" alt="Экспорт и импорт"><br><sub><b>03</b> · 📤 Экспорт и импорт</sub> | <img src="img/bot-settings.png" width="340" alt="Настройки"><br><sub><b>04</b> · ⚙️ Настройки</sub> |
-
-<div align="center">
-
-<img src="img/bot-update.png" width="340" alt="Обновление из чата">
-<br>
-<sub><b>05</b> · 🔄 Обновление из чата</sub>
-
-</div>
 
 </details>
 
