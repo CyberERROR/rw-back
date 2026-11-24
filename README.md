@@ -61,6 +61,35 @@
 | [`install.sh`](install.sh) | установка, меню, служба, обновление, удаление |
 | [`rw-back-bot.sh`](rw-back-bot.sh) | бот: экспорт/импорт, настройки, автобэкап |
 
+<div align="center">
+
+**📸 Как это выглядит**
+
+<img src="img/cli-menu.png" width="460" alt="Меню rw-back в консоли">
+
+<sub>🖥 Меню в консоли</sub>
+
+</div>
+
+<details>
+<summary><b>📱 Скриншоты бота — 5 шт.</b></summary>
+
+<br>
+
+| <img src="img/bot-menu.png" width="340" alt="Главный экран бота"><br><sub><b>01</b> · 🤖 Главный экран</sub> | <img src="img/bot-backup.png" width="340" alt="Бэкап в чате"><br><sub><b>02</b> · 💾 Бэкап в чате</sub> |
+|:--:|:--:|
+| <img src="img/bot-remnawave.png" width="340" alt="Экспорт и импорт"><br><sub><b>03</b> · 📤 Экспорт и импорт</sub> | <img src="img/bot-settings.png" width="340" alt="Настройки"><br><sub><b>04</b> · ⚙️ Настройки</sub> |
+
+<div align="center">
+
+<img src="img/bot-update.png" width="340" alt="Обновление из чата">
+<br>
+<sub><b>05</b> · 🔄 Обновление из чата</sub>
+
+</div>
+
+</details>
+
 <a id="features"></a>
 
 <img src="https://capsule-render.vercel.app/api?type=soft&height=56&color=0:000000,55:030b1f,100:2563eb&text=02%20%C2%B7%20%D0%92%D0%9E%D0%97%D0%9C%D0%9E%D0%96%D0%9D%D0%9E%D0%A1%D0%A2%D0%98&fontSize=21&fontColor=60A5FA&fontAlignY=54&animation=fadeIn" width="100%" alt="02 · ВОЗМОЖНОСТИ"/>
