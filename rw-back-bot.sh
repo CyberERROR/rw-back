@@ -714,6 +714,8 @@ wait_panel_healthy() {
 }
 
 DUMP_FAIL=""
+DUMP_ARTIFACT=""
+CRON_DUMP_FILE=""
 
 dump_error_line() {
     local err="$1" line=""
@@ -723,13 +725,33 @@ dump_error_line() {
     fi
     line=$(printf '%s' "$line" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     (( ${#line} > 160 )) && line="${line:0:157}…"
-    [[ -n "$line" ]] || line="pg_dumpall завершился с ошибкой без текста"
     printf '%s' "$line"
+}
+
+dump_quarantine() {
+    local src="$1" why="$2" dir="$STATE_DIR/corrupt"
+    mkdir -p "$dir" 2>/dev/null || { rm -f "$src"; return 0; }
+    local base dst
+    base="${src##*/}"
+    dst="$dir/${base}.$(date +%Y%m%d_%H%M%S)"
+    if mv -f "$src" "$dst" 2>/dev/null; then
+        printf '[%s] артефакт сбоя: %s (%s) — %s\n' "$(date +'%Y-%m-%d %H:%M:%S')" "$dst" "$(human_size_fast "$dst")" "$why" >&2
+        DUMP_ARTIFACT="$dst"
+    else
+        rm -f "$src"
+    fi
+    ls -t "$dir"/* 2>/dev/null | tail -n +4 | xargs -r rm -f 2>/dev/null
+    return 0
+}
+
+dump_tail_ok() {
+    tail -c 4096 "$1" 2>/dev/null | grep -q 'dump complete'
 }
 
 dump_to_file() {
     local out="$1" err="${2:-/dev/null}"
     DUMP_FAIL=""
+    DUMP_ARTIFACT=""
     if ! db_running; then
         DUMP_FAIL="контейнер БД ${DB_CONTAINER} не запущен"
         return 1
@@ -739,27 +761,66 @@ dump_to_file() {
         return 1
     fi
     [[ -f "$err" ]] && : > "$err" 2>/dev/null
-    if ! ( set -o pipefail; docker exec "$DB_CONTAINER" pg_dumpall -c -U "$DB_USER" 2> "$err" | gzip -9 > "$out" ); then
-        rm -f "$out"
-        DUMP_FAIL="$(dump_error_line "$err")"
-        return 1
+
+    local free rc raw eline
+    free=$(free_space_bytes)
+    free=${free:-0}
+
+    if (( free == 0 || free >= 400 * 1024 * 1024 )); then
+        raw="$STATE_DIR/dump_raw_$$.sql"
+        docker exec "$DB_CONTAINER" pg_dumpall -c -U "$DB_USER" > "$raw" 2> "$err"
+        rc=$?
+        if (( rc != 0 )); then
+            rm -f "$raw"
+            eline=$(dump_error_line "$err")
+            if [[ -n "$eline" ]]; then
+                DUMP_FAIL="pg_dumpall завершился с кодом ${rc}: ${eline}"
+            else
+                DUMP_FAIL="pg_dumpall завершился с кодом ${rc} без текста ошибки"
+            fi
+            return 1
+        fi
+        if [[ ! -s "$raw" ]]; then
+            rm -f "$raw"
+            DUMP_FAIL="pg_dumpall не отдал данные (код 0, пустой вывод)"
+            return 1
+        fi
+        if ! dump_tail_ok "$raw"; then
+            dump_quarantine "$raw" "нет финальной метки pg_dumpall"
+            DUMP_FAIL="дамп оборван: pg_dumpall не дописал до конца"
+            return 1
+        fi
+        if ! gzip -9 -c "$raw" > "$out" 2> "$STATE_DIR/gzip_$$.err"; then
+            DUMP_FAIL="gzip вернул ошибку: $(head -n 1 "$STATE_DIR/gzip_$$.err" 2>/dev/null)"
+            rm -f "$out" "$raw" "$STATE_DIR/gzip_$$.err"
+            return 1
+        fi
+        rm -f "$raw" "$STATE_DIR/gzip_$$.err"
+    else
+        if ! ( set -o pipefail; docker exec "$DB_CONTAINER" pg_dumpall -c -U "$DB_USER" 2> "$err" | gzip -9 > "$out" ); then
+            rm -f "$out"
+            DUMP_FAIL="$(dump_error_line "$err")"
+            return 1
+        fi
+        if [[ ! -s "$out" ]]; then
+            rm -f "$out"
+            DUMP_FAIL="дамп получился пустым"
+            return 1
+        fi
+        local rawn
+        rawn=$(gzip -l "$out" 2>/dev/null | awk 'NR==2{print $2}')
+        [[ "$rawn" =~ ^[0-9]+$ ]] || rawn=0
+        if (( rawn < 1024 )); then
+            rm -f "$out"
+            DUMP_FAIL="дамп слишком мал (${rawn} Б) — pg_dumpall не отдал данные"
+            return 1
+        fi
     fi
-    if [[ ! -s "$out" ]]; then
-        rm -f "$out"
-        DUMP_FAIL="дамп получился пустым"
-        return 1
-    fi
-    if ! gzip -t "$out" > /dev/null 2>&1; then
-        rm -f "$out"
-        DUMP_FAIL="архив повреждён (gzip -t)"
-        return 1
-    fi
-    local raw
-    raw=$(gzip -l "$out" 2>/dev/null | awk 'NR==2{print $2}')
-    [[ "$raw" =~ ^[0-9]+$ ]] || raw=0
-    if (( raw < 1024 )); then
-        rm -f "$out"
-        DUMP_FAIL="дамп слишком мал (${raw} Б) — pg_dumpall не отдал данные"
+
+    local gzerr
+    if ! gzerr=$(gzip -t "$out" 2>&1); then
+        dump_quarantine "$out" "gzip -t: ${gzerr:-без текста}"
+        DUMP_FAIL="архив повреждён: ${gzerr:-gzip -t не дал текста}"
         return 1
     fi
     return 0
@@ -1283,6 +1344,7 @@ schedule_text() {
         if ! cron_daemon_active; then
             extra+=$'\n'"⚠️ Служба cron не запущена"
         fi
+        extra+=$'\n'"ℹ️ Запуск в :17 каждого часа"
     fi
     printf '%s' "🕒 <b>Расписание автобэкапа</b>
 ➖➖➖➖➖
@@ -1805,7 +1867,7 @@ cron_apply() {
         (( hours <= 0 )) && return 0
         return 1
     fi
-    local line="0 * * * * /bin/bash $INSTALL_DIR/rw-back-bot.sh cron >> /var/log/rw-back-cron.log 2>&1"
+    local line="17 * * * * /bin/bash $INSTALL_DIR/rw-back-bot.sh cron >> /var/log/rw-back-cron.log 2>&1"
     local tmp rc listing
     listing=$(crontab -l 2>&1)
     rc=$?
@@ -2421,6 +2483,8 @@ fmt_ts() {
     fi
 }
 
+CRON_TICK_MIN=17
+
 cron_next_run() {
     (( CRON_HOURS > 0 )) || { printf '0'; return 0; }
     local anchor now due rem
@@ -2432,7 +2496,7 @@ cron_next_run() {
         due=$now
     fi
     (( due < now )) && due=$now
-    rem=$((due % 3600))
+    rem=$(( (due + 3600 - CRON_TICK_MIN * 60) % 3600 ))
     (( rem > 0 )) && due=$((due + 3600 - rem))
     printf '%s' "$due"
 }
@@ -2471,20 +2535,56 @@ cron_task_present() {
     crontab -l 2>/dev/null | grep -q 'rw-back-bot.sh cron'
 }
 
+free_txt_m() {
+    awk -v b="$1" 'BEGIN{printf "%.0f", b/1048576}'
+}
+
+cron_dump_with_retry() {
+    local ts="$1" attempt free
+    local -a reasons=()
+    for attempt in 1 2; do
+        free=$(free_space_bytes)
+        free=${free:-0}
+        if (( free > 0 && free < 200 * 1024 * 1024 )); then
+            DUMP_FAIL="мало места на диске (свободно $(free_txt_m "$free") МБ из 200 МБ)"
+            return 1
+        fi
+        if (( attempt == 1 )); then
+            CRON_DUMP_FILE="$BACKUP_DIR/rw_db_backup_${ts}.sql.gz"
+        else
+            CRON_DUMP_FILE="$BACKUP_DIR/rw_db_backup_${ts}_retry.sql.gz"
+        fi
+        if dump_to_file "$CRON_DUMP_FILE" "$STATE_DIR/cron.err"; then
+            return 0
+        fi
+        reasons+=("попытка ${attempt}: ${DUMP_FAIL:-дамп не создан}")
+        [[ -n "$DUMP_ARTIFACT" ]] && reasons+=("артефакт: ${DUMP_ARTIFACT##*/}")
+        (( attempt == 1 )) && sleep 15
+    done
+    DUMP_FAIL=$(printf '%s · ' "${reasons[@]}")
+    DUMP_FAIL="${DUMP_FAIL% · }"
+    (( ${#DUMP_FAIL} > 200 )) && DUMP_FAIL="${DUMP_FAIL:0:197}…"
+    return 1
+}
+
 cron_notify_fail() {
-    local reason="$1" ids uid response next_txt
+    local reason="$1" ids uid response next_txt free_txt
     local -a arr=()
     log "автобэкап не удался: ${reason}"
     [[ -n "${BOT_TOKEN:-}" ]] || return 0
     ids="$(normalize_ids "${BOT_ADMIN_IDS:-}")"
     [[ -n "$ids" ]] || return 0
     next_txt="$(fmt_ts "$(cron_next_run)")"
+    free_txt=$(free_space_bytes)
+    free_txt=${free_txt:-0}
+    free_txt=$((free_txt / 1024 / 1024))
     IFS=',' read -ra arr <<< "$ids"
     for uid in "${arr[@]}"; do
         response=$(tg_send "$uid" "❌ <b>Автобэкап не удался</b>
 ➖➖➖➖➖
 🕒 $(date +'%d.%m %H:%M')
 ⚠️ $(escape_html "$reason")
+💾 Свободно: <b>${free_txt} МБ</b>
 ⏭ Следующая попытка: <b>${next_txt}</b>
 
 Лог: <code>/var/log/rw-back-cron.log</code>")
@@ -2523,14 +2623,14 @@ cmd_cron() {
 
     local ts file
     ts="$(date +%Y-%m-%d_%H_%M_%S)"
-    file="$BACKUP_DIR/rw_db_backup_${ts}.sql.gz"
 
-    if ! dump_to_file "$file" "$STATE_DIR/cron.err"; then
+    if ! cron_dump_with_retry "$ts"; then
         local reason="${DUMP_FAIL:-дамп не создан}"
         cron_mark "$now" "$manual" "fail|${reason}"
         cron_notify_fail "$reason"
         die "автобэкап не удался: ${reason}"
     fi
+    local file="$CRON_DUMP_FILE"
     apply_retention "$KEEP_FILES"
     cron_mark "$now" "$manual" "ok"
     cron_state_put cron_last_ok "$(date +%s)"

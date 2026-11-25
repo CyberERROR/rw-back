@@ -1570,6 +1570,8 @@ menu_settings() {
     done
 }
 
+CRON_TICK_MIN=17
+
 cron_next_hour_ts() {
     local anchor=0 now due rem
     [[ -f "$STATE_DIR/cron_last_run" ]] && anchor=$(head -n 1 "$STATE_DIR/cron_last_run" 2>/dev/null)
@@ -1581,7 +1583,7 @@ cron_next_hour_ts() {
         due=$now
     fi
     (( due < now )) && due=$now
-    rem=$((due % 3600))
+    rem=$(( (due + 3600 - CRON_TICK_MIN * 60) % 3600 ))
     (( rem > 0 )) && due=$((due + 3600 - rem))
     printf '%s' "$due"
 }
